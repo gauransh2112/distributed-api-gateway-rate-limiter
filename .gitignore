@@ -1,0 +1,24 @@
+# Maven
+target/
+
+# Maven Wrapper cache
+.mvn/wrapper/maven-wrapper.jar
+
+# IntelliJ
+.idea/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build
+*.class
+
+# Temporary
+*.tmp

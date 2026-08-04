@@ -1,5 +1,6 @@
 package com.gauransh.gateway.shared.exception;
 
+import com.gauransh.gateway.ratelimiter.exception.RateLimitExceededException;
 import com.gauransh.gateway.shared.model.ApiResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -18,6 +20,26 @@ import java.util.UUID;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleRateLimitExceededException(RateLimitExceededException ex) {
+        String requestId = UUID.randomUUID().toString();
+        log.warn("Rate limit exceeded [requestId={}, retryAfter={}s]: {}", requestId, ex.getRetryAfterSeconds(), ex.getMessage());
+
+        Map<String, Object> details = Map.of(
+                "retryAfter", ex.getRetryAfterSeconds()
+        );
+
+        ApiResponse.ApiError apiError = ApiResponse.ApiError.of(
+                ex.getErrorCode(),
+                ex.getMessage(),
+                details
+        );
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+                .body(ApiResponse.error(apiError, requestId));
+    }
 
     @ExceptionHandler(GatewayException.class)
     public ResponseEntity<ApiResponse<Void>> handleGatewayException(GatewayException ex) {

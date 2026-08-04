@@ -93,6 +93,12 @@ A pluggable rate-limiting engine inspired by production API Gateways.
 
 ### Capabilities
 
+- ✅ Core Rate Limiter Foundation & Extensible Abstractions
+- ✅ Transport-Agnostic Context (`RateLimitContext`) & Decision Model (`RateLimitDecision`)
+- ✅ Pass-through Integration Engine (`NoOpRateLimiter`)
+- ✅ Pipeline Servlet Filter (`RateLimitFilter`)
+- ✅ Standard HTTP 429 & Retry-After Exception Handling (`RateLimitExceededException`)
+- ✅ Strongly Typed Configuration Properties (`RateLimiterProperties`)
 - Per-IP Rate Limiting
 - Per-User Rate Limiting
 - Per-API Key Rate Limiting

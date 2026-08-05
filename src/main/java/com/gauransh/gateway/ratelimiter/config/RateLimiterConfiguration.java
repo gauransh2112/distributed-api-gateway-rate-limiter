@@ -1,7 +1,11 @@
 package com.gauransh.gateway.ratelimiter.config;
 
 import com.gauransh.gateway.ratelimiter.RateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.FixedWindowRateLimiter;
 import com.gauransh.gateway.ratelimiter.noop.NoOpRateLimiter;
+import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
+import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -12,8 +16,8 @@ import java.time.Clock;
 /**
  * Spring configuration providing default rate limiter bean definitions.
  *
- * <p>Registers a {@link NoOpRateLimiter} fallback bean and UTC {@link Clock} bean
- * when not otherwise defined.</p>
+ * <p>Registers an active {@link RateLimiter} bean based on configured
+ * {@link RateLimiterProperties#getAlgorithm()} strategy.</p>
  */
 @Configuration
 @EnableConfigurationProperties(RateLimiterProperties.class)
@@ -21,7 +25,15 @@ public class RateLimiterConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(RateLimiter.class)
-    public RateLimiter rateLimiter() {
+    public RateLimiter rateLimiter(
+            RateLimiterProperties properties,
+            @Autowired(required = false) RateLimitKeyResolver keyResolver,
+            @Autowired(required = false) RateLimitPolicyResolver policyResolver,
+            Clock clock
+    ) {
+        if (properties.getAlgorithm() == RateLimiterAlgorithm.FIXED_WINDOW) {
+            return new FixedWindowRateLimiter(properties, keyResolver, policyResolver, clock);
+        }
         return new NoOpRateLimiter();
     }
 
@@ -31,3 +43,4 @@ public class RateLimiterConfiguration {
         return Clock.systemUTC();
     }
 }
+

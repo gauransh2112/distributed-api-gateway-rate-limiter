@@ -2,6 +2,7 @@ package com.gauransh.gateway.ratelimiter.config;
 
 import com.gauransh.gateway.ratelimiter.RateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.FixedWindowRateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.SlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.noop.NoOpRateLimiter;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
@@ -33,6 +34,9 @@ public class RateLimiterConfiguration {
     ) {
         if (properties.getAlgorithm() == RateLimiterAlgorithm.FIXED_WINDOW) {
             return new FixedWindowRateLimiter(properties, keyResolver, policyResolver, clock);
+        }
+        if (properties.getAlgorithm() == RateLimiterAlgorithm.SLIDING_WINDOW_COUNTER) {
+            return new SlidingWindowCounterRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         return new NoOpRateLimiter();
     }

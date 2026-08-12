@@ -2,6 +2,7 @@ package com.gauransh.gateway.ratelimiter.config;
 
 import com.gauransh.gateway.ratelimiter.RateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.FixedWindowRateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.leakybucket.LeakyBucketRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.SlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowlog.SlidingWindowLogRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.tokenbucket.TokenBucketRateLimiter;
@@ -45,6 +46,9 @@ public class RateLimiterConfiguration {
         }
         if (properties.getAlgorithm() == RateLimiterAlgorithm.TOKEN_BUCKET) {
             return new TokenBucketRateLimiter(properties, keyResolver, policyResolver, clock);
+        }
+        if (properties.getAlgorithm() == RateLimiterAlgorithm.LEAKY_BUCKET) {
+            return new LeakyBucketRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         return new NoOpRateLimiter();
     }

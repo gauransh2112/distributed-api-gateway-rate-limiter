@@ -1405,17 +1405,17 @@ Every benchmark will include quantitative metrics.
 
 ## Algorithm Comparison
 
-The project will compare all implemented rate-limiting algorithms.
+The project compares all five implemented in-memory rate-limiting algorithms under controlled benchmark workloads.
 
-| Algorithm | Speed | Memory | Accuracy | Burst Support | Complexity |
-|-----------|--------|--------|----------|---------------|------------|
-| Fixed Window | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Sliding Window Counter | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Sliding Window Log | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Token Bucket | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| Leaky Bucket | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
+| Algorithm | Observed Throughput | Space Complexity | Accuracy & Semantics | Burst Support | Primary Engineering Trade-Off |
+|-----------|--------------------|------------------|----------------------|---------------|--------------------------------|
+| **Fixed Window** | High (~6.4M RPS) | $\mathcal{O}(N)$ | Subject to boundary burst spikes | Permits up to $2\times$ boundary burst | Maximum throughput; simple implementation; vulnerable to boundary bursts |
+| **Sliding Window Counter** | High (~6.2M RPS) | $\mathcal{O}(N)$ | Weighted estimation approximation | Capacity limited | High throughput; smooth window estimation; minor approximation variance |
+| **Sliding Window Log** | Moderate (~4.8M RPS) | $\mathcal{O}(N \times K)$ | Exact timestamp rolling window reference | Capacity limited | Absolute rolling accuracy; higher state memory growth under volume |
+| **Token Bucket** | High (~6.2M RPS) | $\mathcal{O}(N)$ | Continuous token refill kinetics | Permits burst up to capacity $C$ | Ideal for bursty client workloads; controlled continuous refill |
+| **Leaky Bucket** | High (~5.4M RPS) | $\mathcal{O}(N)$ | Continuous water drain outflow | Rejects burst exceeding bucket space | Ideal for traffic smoothing; enforces constant outflow processing |
 
-The table will be updated as each algorithm is implemented and benchmarked.
+*Full benchmark results, environment specifications, raw per-run data tables, and methodology limitations are documented in [benchmarks/reports/algorithm_benchmark_report.md](file:///c:/Users/ASUS/OneDrive/Desktop/PROJECTS/Distributed_api_gateway/benchmarks/reports/algorithm_benchmark_report.md).*
 
 ---
 

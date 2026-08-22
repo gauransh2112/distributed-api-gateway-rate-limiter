@@ -195,7 +195,7 @@ Minor code refactoring does not require an ADR.
 | ADR-0008 | Redis Distributed State | Planned |
 | ADR-0009 | Lua Scripts | Planned |
 | ADR-0010 | Stateless Gateway | Planned |
-| ADR-0011 | Docker Compose | Planned |
+| ADR-0011 | Docker Compose | Accepted |
 | ADR-0012 | React Dashboard | Planned |
 | ADR-0013 | Testing Strategy | Planned |
 | ADR-0014 | Package-by-Feature | Planned |
@@ -6147,6 +6147,22 @@ The application architecture should require no code changes during migration.
 - Development_Playbook.md
 - Deployment Guide
 - AI_Guide.md
+
+---
+
+# Sprint 9 Redis Infrastructure Decision (Addendum)
+
+**Status:** Accepted (Implemented in Sprint 9)  
+**Decision Date:** 2026-08-22  
+
+### Context & Justification
+For Sprint 9 local development infrastructure:
+- **Redis Image**: `redis:7.2-alpine` (Selected as the Sprint 9 local development Redis image after reviewing project requirements; the repository documentation does not prescribe an exact Redis image tag).
+- **Alpine Base Rationale**: Small footprint (~30MB), low attack surface, rapid local container startup.
+- **Topology**: Standalone single-node Redis container (`docker/docker-compose.yml`) mapped to `6379:6379`.
+- **Health Check**: Native `redis-cli ping` execution (interval 5s, timeout 3s, retries 5).
+- **Connection Pooling**: `commons-pool2` added to support Spring Data Redis Lettuce connection pool (`spring.data.redis.lettuce.pool.*`).
+- **Scope Limit**: Development infrastructure setup only. Redis rate-limiting algorithms, repositories, and Lua scripts begin in Sprint 10.
 
 ---
 

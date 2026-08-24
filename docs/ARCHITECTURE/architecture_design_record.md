@@ -192,7 +192,7 @@ Minor code refactoring does not require an ADR.
 | ADR-0005 | JWT Authentication | Planned |
 | ADR-0006 | WebClient over RestTemplate | Planned |
 | ADR-0007 | Strategy Pattern | Planned |
-| ADR-0008 | Redis Distributed State | Planned |
+| ADR-0008 | Redis Distributed State | Accepted |
 | ADR-0009 | Lua Scripts | Planned |
 | ADR-0010 | Stateless Gateway | Planned |
 | ADR-0011 | Docker Compose | Accepted |

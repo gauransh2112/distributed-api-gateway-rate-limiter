@@ -118,6 +118,20 @@ There is an acknowledged conflict in the repository documentation regarding Redi
 
 ---
 
-## 8. Scope Disclaimer
+## 9. Sprint 10 — Redis Storage Abstraction Layer
 
-**Redis-backed storage and rate limiting are not implemented in Sprint 9. They begin in Sprint 10.**
+Sprint 10 introduces the low-level Redis Storage Abstraction Layer (`RedisService`, `RedisKeyBuilder`, `RedisSerializer`, `RedisStorageException`).
+
+### Core Components
+- **`RedisKeyBuilder`**: Standardized key builder enforcing the repository schema `<project>:<module>:<resource>:<identifier>` (e.g. `gateway:ratelimit:user:123`).
+- **`RedisService` & `DefaultRedisService`**: Low-level storage contract exposing string operations (`set`, `setWithTtl`, `get`), counters (`increment`, `incrementBy`, `decrement`), TTL management (`expire`), existence (`exists`, `delete`), and hash field operations (`hashSet`, `hashGet`, `hashDelete`).
+- **`JacksonRedisSerializer`**: JSON serialization and deserialization utility using Jackson `ObjectMapper`.
+- **`RedisStorageException`**: Domain exception extending `GatewayException` for Spring Data Redis driver exception translation.
+
+### Integration Testing
+Storage operations are verified using `RedisStorageIntegrationTest.java`, which executes live against the `redis:7.2-alpine` container:
+```bash
+.\mvnw.cmd test -Dtest=RedisStorageIntegrationTest
+```
+
+> **Important**: Distributed rate-limiting algorithms, Lua scripts, and atomic operations are **not** implemented in Sprint 10. They begin in Sprint 11.

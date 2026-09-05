@@ -128,10 +128,24 @@ Sprint 10 introduces the low-level Redis Storage Abstraction Layer (`RedisServic
 - **`JacksonRedisSerializer`**: JSON serialization and deserialization utility using Jackson `ObjectMapper`.
 - **`RedisStorageException`**: Domain exception extending `GatewayException` for Spring Data Redis driver exception translation.
 
-### Integration Testing
-Storage operations are verified using `RedisStorageIntegrationTest.java`, which executes live against the `redis:7.2-alpine` container:
+---
+
+## 10. Sprint 11 — Redis Atomic Operations & TTL Capabilities
+
+Sprint 11 extends `RedisService` with single-command atomic primitives and TTL capabilities required by distributed rate limiting.
+
+### Core Capabilities Introduced
+- **Atomic Set Primitives**: `setIfAbsent` (`SETNX`), `setIfAbsentWithTtl` (`SETNX EX`), `getAndSet` (`GETSET`).
+- **Atomic Counter Primitives**: `incrementBy` (`INCRBY`), `decrementBy` (`DECRBY`).
+- **Atomic Hash Primitives**: `hashSetIfAbsent` (`HSETNX`), `hashIncrement` (`HINCRBY`).
+- **TTL Management**: `getTtl` (`TTL`), `expireAt` (`EXPIREAT`), `persist` (`PERSIST`).
+
+### Integration & Concurrency Testing
+- **`RedisStorageIntegrationTest`**: Verifies atomic primitives and TTL inspection against live Redis.
+- **`RedisConcurrencyIntegrationTest`**: Multi-threaded test verifying zero lost updates under 30-thread contention.
+
 ```bash
-.\mvnw.cmd test -Dtest=RedisStorageIntegrationTest
+.\mvnw.cmd test -Dtest=RedisStorageIntegrationTest,RedisConcurrencyIntegrationTest
 ```
 
-> **Important**: Distributed rate-limiting algorithms, Lua scripts, and atomic operations are **not** implemented in Sprint 10. They begin in Sprint 11.
+> **Important**: Lua script execution engines (`EVAL`/`EVALSHA`) are **not** implemented in Sprint 11. They begin in Sprint 12.

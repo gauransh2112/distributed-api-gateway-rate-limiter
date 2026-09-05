@@ -3,15 +3,15 @@ package com.gauransh.gateway.redis.service;
 import com.gauransh.gateway.redis.exception.RedisStorageException;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 
 /**
  * Storage Abstraction Contract for Redis operations.
  *
- * <p>Provides low-level key-value, counter, TTL, and hash storage primitives over Redis.
- * Application logic and rate limiting algorithms interact with Redis exclusively through
- * this contract.</p>
+ * <p>Provides low-level key-value, counter, TTL, atomic primitive, and hash storage capabilities over Redis.
+ * Application logic and rate limiting algorithms interact with Redis exclusively through this contract.</p>
  */
 public interface RedisService {
 
@@ -33,6 +33,37 @@ public interface RedisService {
      * @throws RedisStorageException if storage operation fails
      */
     void setWithTtl(String key, String value, Duration ttl);
+
+    /**
+     * Atomically sets a key to value only if key does not exist (Redis {@code SETNX}).
+     *
+     * @param key   the Redis key
+     * @param value the string value
+     * @return true if key was set, false if key already existed
+     * @throws RedisStorageException if storage operation fails
+     */
+    Boolean setIfAbsent(String key, String value);
+
+    /**
+     * Atomically sets a key to value with expiration duration only if key does not exist (Redis {@code SETNX EX}).
+     *
+     * @param key   the Redis key
+     * @param value the string value
+     * @param ttl   the expiration duration
+     * @return true if key was set, false if key already existed
+     * @throws RedisStorageException if storage operation fails
+     */
+    Boolean setIfAbsentWithTtl(String key, String value, Duration ttl);
+
+    /**
+     * Atomically sets key to value and returns its old value (Redis {@code GETSET}).
+     *
+     * @param key   the Redis key
+     * @param value the new string value
+     * @return Optional containing previous string value if key existed, or empty
+     * @throws RedisStorageException if storage operation fails
+     */
+    Optional<String> getAndSet(String key, String value);
 
     /**
      * Retrieves the string value associated with the specified key.
@@ -72,6 +103,16 @@ public interface RedisService {
     Long decrement(String key);
 
     /**
+     * Atomically decrements the numeric value of a key by the specified amount.
+     *
+     * @param key    the Redis key
+     * @param amount the value to decrement by
+     * @return the updated counter value after decrementing
+     * @throws RedisStorageException if operation fails
+     */
+    Long decrementBy(String key, long amount);
+
+    /**
      * Deletes the specified key from Redis.
      *
      * @param key the Redis key
@@ -90,7 +131,7 @@ public interface RedisService {
     Boolean exists(String key);
 
     /**
-     * Sets an explicit expiration duration (TTL) on an existing key.
+     * Sets an explicit expiration duration (TTL) on an existing key (Redis {@code EXPIRE}).
      *
      * @param key the Redis key
      * @param ttl the expiration duration
@@ -98,6 +139,34 @@ public interface RedisService {
      * @throws RedisStorageException if expire operation fails
      */
     Boolean expire(String key, Duration ttl);
+
+    /**
+     * Sets an explicit expiration timestamp (Instant) on an existing key (Redis {@code EXPIREAT}).
+     *
+     * @param key      the Redis key
+     * @param expireAt the target expiration timestamp
+     * @return true if expiration was set, false if key does not exist or failed
+     * @throws RedisStorageException if expireAt operation fails
+     */
+    Boolean expireAt(String key, Instant expireAt);
+
+    /**
+     * Gets the remaining TTL duration of a key.
+     *
+     * @param key the Redis key
+     * @return Optional containing remaining Duration if key exists and has TTL, or empty if key missing / no TTL
+     * @throws RedisStorageException if TTL query fails
+     */
+    Optional<Duration> getTtl(String key);
+
+    /**
+     * Removes the expiration from a key, turning it into a persistent key (Redis {@code PERSIST}).
+     *
+     * @param key the Redis key
+     * @return true if expiration was removed, false if key does not exist or had no expiration
+     * @throws RedisStorageException if persist operation fails
+     */
+    Boolean persist(String key);
 
     /**
      * Sets a field-value pair in a Redis hash.
@@ -108,6 +177,28 @@ public interface RedisService {
      * @throws RedisStorageException if hash operation fails
      */
     void hashSet(String key, String field, String value);
+
+    /**
+     * Atomically sets field in hash to value only if field does not exist (Redis {@code HSETNX}).
+     *
+     * @param key   the Redis hash key
+     * @param field the hash field name
+     * @param value the string value
+     * @return true if field was set, false if field already existed
+     * @throws RedisStorageException if hash operation fails
+     */
+    Boolean hashSetIfAbsent(String key, String field, String value);
+
+    /**
+     * Atomically increments numeric value of a hash field by specified amount (Redis {@code HINCRBY}).
+     *
+     * @param key    the Redis hash key
+     * @param field  the hash field name
+     * @param amount the increment amount
+     * @return updated field counter value
+     * @throws RedisStorageException if hash operation fails
+     */
+    Long hashIncrement(String key, String field, long amount);
 
     /**
      * Retrieves the value of a field from a Redis hash.

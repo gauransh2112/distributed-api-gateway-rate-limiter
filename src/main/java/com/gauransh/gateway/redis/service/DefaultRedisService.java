@@ -4,14 +4,15 @@ import com.gauransh.gateway.redis.exception.RedisStorageException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
  * Production-grade implementation of {@link RedisService} backed by Spring Data Redis's {@link StringRedisTemplate}.
  *
- * <p>Handles operation execution, connection delegation, and translation of Spring Data / Lettuce exceptions
- * into domain-specific {@link RedisStorageException}.</p>
+ * <p>Handles operation execution, connection delegation, atomic primitives, TTL management, and translation
+ * of Spring Data / Lettuce exceptions into domain-specific {@link RedisStorageException}.</p>
  */
 public class DefaultRedisService implements RedisService {
 
@@ -34,11 +35,43 @@ public class DefaultRedisService implements RedisService {
     @Override
     public void setWithTtl(String key, String value, Duration ttl) {
         validateKey(key);
-        Objects.requireNonNull(ttl, "TTL duration must not be null");
+        validateDuration(ttl);
         try {
             redisTemplate.opsForValue().set(key, value, ttl);
         } catch (Exception e) {
             throw new RedisStorageException("SET_WITH_TTL", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Boolean setIfAbsent(String key, String value) {
+        validateKey(key);
+        try {
+            return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(key, value));
+        } catch (Exception e) {
+            throw new RedisStorageException("SET_IF_ABSENT", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Boolean setIfAbsentWithTtl(String key, String value, Duration ttl) {
+        validateKey(key);
+        validateDuration(ttl);
+        try {
+            return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(key, value, ttl));
+        } catch (Exception e) {
+            throw new RedisStorageException("SET_IF_ABSENT_WITH_TTL", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Optional<String> getAndSet(String key, String value) {
+        validateKey(key);
+        try {
+            String oldValue = redisTemplate.opsForValue().getAndSet(key, value);
+            return Optional.ofNullable(oldValue);
+        } catch (Exception e) {
+            throw new RedisStorageException("GET_AND_SET", key, e.getMessage(), e);
         }
     }
 
@@ -84,6 +117,16 @@ public class DefaultRedisService implements RedisService {
     }
 
     @Override
+    public Long decrementBy(String key, long amount) {
+        validateKey(key);
+        try {
+            return redisTemplate.opsForValue().decrement(key, amount);
+        } catch (Exception e) {
+            throw new RedisStorageException("DECREMENT_BY", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
     public Boolean delete(String key) {
         validateKey(key);
         try {
@@ -106,11 +149,51 @@ public class DefaultRedisService implements RedisService {
     @Override
     public Boolean expire(String key, Duration ttl) {
         validateKey(key);
-        Objects.requireNonNull(ttl, "TTL duration must not be null");
+        validateDuration(ttl);
         try {
             return Boolean.TRUE.equals(redisTemplate.expire(key, ttl));
         } catch (Exception e) {
             throw new RedisStorageException("EXPIRE", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Boolean expireAt(String key, Instant expireAt) {
+        validateKey(key);
+        if (expireAt == null) {
+            throw new IllegalArgumentException("ExpireAt instant must not be null");
+        }
+        if (expireAt.isBefore(Instant.now())) {
+            throw new IllegalArgumentException("ExpireAt instant must not be in the past");
+        }
+        try {
+            return Boolean.TRUE.equals(redisTemplate.expireAt(key, expireAt));
+        } catch (Exception e) {
+            throw new RedisStorageException("EXPIRE_AT", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Optional<Duration> getTtl(String key) {
+        validateKey(key);
+        try {
+            Long ttlSeconds = redisTemplate.getExpire(key);
+            if (ttlSeconds == null || ttlSeconds < 0) {
+                return Optional.empty();
+            }
+            return Optional.of(Duration.ofSeconds(ttlSeconds));
+        } catch (Exception e) {
+            throw new RedisStorageException("GET_TTL", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Boolean persist(String key) {
+        validateKey(key);
+        try {
+            return Boolean.TRUE.equals(redisTemplate.persist(key));
+        } catch (Exception e) {
+            throw new RedisStorageException("PERSIST", key, e.getMessage(), e);
         }
     }
 
@@ -122,6 +205,28 @@ public class DefaultRedisService implements RedisService {
             redisTemplate.opsForHash().put(key, field, value);
         } catch (Exception e) {
             throw new RedisStorageException("HASH_SET", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Boolean hashSetIfAbsent(String key, String field, String value) {
+        validateKey(key);
+        validateField(field);
+        try {
+            return redisTemplate.opsForHash().putIfAbsent(key, field, value);
+        } catch (Exception e) {
+            throw new RedisStorageException("HASH_SET_IF_ABSENT", key, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public Long hashIncrement(String key, String field, long amount) {
+        validateKey(key);
+        validateField(field);
+        try {
+            return redisTemplate.opsForHash().increment(key, field, amount);
+        } catch (Exception e) {
+            throw new RedisStorageException("HASH_INCREMENT", key, e.getMessage(), e);
         }
     }
 
@@ -158,6 +263,12 @@ public class DefaultRedisService implements RedisService {
     private void validateField(String field) {
         if (field == null || field.isBlank()) {
             throw new IllegalArgumentException("Redis hash field must not be null or blank");
+        }
+    }
+
+    private void validateDuration(Duration duration) {
+        if (duration == null || duration.isNegative()) {
+            throw new IllegalArgumentException("TTL duration must not be null or negative");
         }
     }
 }

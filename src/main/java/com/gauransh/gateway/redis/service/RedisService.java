@@ -1,17 +1,25 @@
 package com.gauransh.gateway.redis.service;
 
+import com.gauransh.gateway.redis.exception.LuaExecutionException;
+import com.gauransh.gateway.redis.exception.LuaScriptNotLoadedException;
 import com.gauransh.gateway.redis.exception.RedisStorageException;
+import com.gauransh.gateway.redis.script.LuaExecutor;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 /**
  * Storage Abstraction Contract for Redis operations.
  *
- * <p>Provides low-level key-value, counter, TTL, atomic primitive, and hash storage capabilities over Redis.
- * Application logic and rate limiting algorithms interact with Redis exclusively through this contract.</p>
+ * <p>Provides low-level key-value, counter, TTL, atomic primitive, hash storage, and atomic Lua
+ * execution capabilities over Redis. Application logic and rate limiting algorithms interact with
+ * Redis exclusively through this contract.</p>
+ *
+ * <p>Single-command primitives are atomic on their own. Multi-step state transitions that must be
+ * atomic as a whole are executed through {@link #executeLua(String, Class, List, List)}.</p>
  */
 public interface RedisService {
 
@@ -219,4 +227,21 @@ public interface RedisService {
      * @throws RedisStorageException if hash delete operation fails
      */
     Boolean hashDelete(String key, String field);
+
+    /**
+     * Executes a registered Lua script atomically, delegating to the module's {@link LuaExecutor}.
+     *
+     * <p>Used for workflows whose individual Redis commands would otherwise interleave with those of
+     * other Gateway instances, such as "read state, calculate, update state, refresh TTL".</p>
+     *
+     * @param scriptName the logical script name (for example {@code increment.lua})
+     * @param resultType the expected reply type
+     * @param keys       the Redis keys the script operates on, mapped to the script's {@code KEYS} table
+     * @param args       the script arguments, mapped to the script's {@code ARGV} table
+     * @param <T>        the reply type
+     * @return the script result, decoded as {@code resultType}
+     * @throws LuaScriptNotLoadedException if the script is unknown or cannot be registered with Redis
+     * @throws LuaExecutionException       if the script fails during execution
+     */
+    <T> T executeLua(String scriptName, Class<T> resultType, List<String> keys, List<String> args);
 }

@@ -1,6 +1,7 @@
 package com.gauransh.gateway.redis.service;
 
 import com.gauransh.gateway.redis.exception.RedisStorageException;
+import com.gauransh.gateway.redis.script.LuaExecutor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,13 +34,16 @@ class DefaultRedisServiceUnitTest {
     @Mock
     private HashOperations<String, Object, Object> hashOperations;
 
+    @Mock
+    private LuaExecutor luaExecutor;
+
     private DefaultRedisService redisService;
 
     @BeforeEach
     void setUp() {
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         lenient().when(redisTemplate.opsForHash()).thenReturn(hashOperations);
-        redisService = new DefaultRedisService(redisTemplate);
+        redisService = new DefaultRedisService(redisTemplate, luaExecutor);
     }
 
     @Test
@@ -193,5 +198,19 @@ class DefaultRedisServiceUnitTest {
                 .isInstanceOf(RedisStorageException.class)
                 .hasMessageContaining("Redis operation [GET] failed for key [dev:error:key:1]")
                 .hasCauseInstanceOf(QueryTimeoutException.class);
+    }
+
+    @Test
+    @DisplayName("Should delegate executeLua to the LuaExecutor without altering arguments")
+    void testExecuteLuaDelegation() {
+        List<String> keys = List.of("dev:ratelimiter:user:1");
+        List<String> args = List.of("1", "60");
+        when(luaExecutor.executeLua("increment.lua", Long.class, keys, args)).thenReturn(7L);
+
+        Long result = redisService.executeLua("increment.lua", Long.class, keys, args);
+
+        assertThat(result).isEqualTo(7L);
+        verify(luaExecutor).executeLua("increment.lua", Long.class, keys, args);
+        verifyNoInteractions(valueOperations);
     }
 }

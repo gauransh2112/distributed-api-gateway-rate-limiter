@@ -149,3 +149,92 @@ Sprint 11 extends `RedisService` with single-command atomic primitives and TTL c
 ```
 
 > **Important**: Lua script execution engines (`EVAL`/`EVALSHA`) are **not** implemented in Sprint 11. They begin in Sprint 12.
+
+---
+
+## 11. Sprint 12 — Redis Lua Scripts & Execution Engine
+
+Sprint 12 introduces the mechanism for **atomic multi-step Redis workflows**.
+
+Sprint 11 delivered primitives that are each atomic on their own. A workflow such as
+`read state -> calculate -> update state -> refresh TTL -> return result` is **not** atomic merely
+because every individual command is, so concurrent Gateway instances can still interleave and
+corrupt shared state. Redis executes an entire Lua script without interruption, which closes that
+gap without distributed locks and without JVM synchronization.
+
+### Core Components
+
+- **`LuaScript`**: Immutable value holding a script's name, body, and SHA1 digest.
+- **`LuaScriptLoader`** *(internal)*: Reads `.lua` files from the classpath, computes their SHA1
+  digest, registers them with Redis via `SCRIPT LOAD`, and caches the resulting SHA.
+- **`LuaExecutor` / `DefaultLuaExecutor`** *(public API)*: Executes registered scripts through
+  `EVALSHA`, recovers automatically from a Redis-side script cache miss, and translates Lua
+  failures into the Redis exception hierarchy.
+- **`RedisService.executeLua(...)`**: Storage contract entry point, delegating to `LuaExecutor`.
+
+### Script Lifecycle
+
+```
+Application Startup
+        |
+Read Script From Classpath      (redis/scripts/*.lua)
+        |
+Compute SHA1
+        |
+SCRIPT LOAD
+        |
+Cache SHA  ->  EVALSHA on every subsequent execution
+```
+
+`EVALSHA` is used instead of `EVAL` so the script body is not transmitted on every request.
+
+### Script Cache Miss Recovery
+
+Redis may evict its script cache (for example after `SCRIPT FLUSH` or a restart). The engine
+recovers without operator intervention:
+
+```
+EVALSHA  ->  NOSCRIPT  ->  reload script  ->  update SHA  ->  retry once  ->  result
+```
+
+Recovery is bounded to a single retry, so a persistently failing script cannot cause an
+unbounded retry loop.
+
+### Shipped Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `increment.lua` | Atomic counter increment plus expiration establishment |
+
+`increment.lua` applies the TTL only when the key has no expiration, so repeated increments never
+extend an existing window. Algorithm scripts (`token_bucket.lua`, sliding window, leaky bucket)
+belong to the distributed rate limiter work and are **not** part of Sprint 12.
+
+### Error Semantics
+
+| Code | Exception | Raised When |
+|------|-----------|-------------|
+| `REDIS-005` | `LuaExecutionException` | The script fails during execution (Lua runtime error, invalid arguments) |
+| `REDIS-006` | `LuaScriptNotLoadedException` | The script is unknown, or Redis rejects its registration |
+
+The Redis module never decides HTTP behaviour or fail-open / fail-closed semantics. The calling
+module owns failure policy.
+
+### Startup Behaviour When Redis Is Unavailable
+
+Script bodies are read from the classpath eagerly, and a missing script resource fails fast
+because it is a packaging defect. Registering a script with Redis is a network operation: failure
+at startup is logged as a warning and tolerated, because the execution engine registers the script
+automatically on the first `NOSCRIPT` response. Redis unavailability therefore never prevents the
+Gateway from starting, and unit tests remain 100% independent of Redis.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=LuaScriptLoaderTest,DefaultLuaExecutorTest
+.\mvnw.cmd test -Dtest=LuaExecutionIntegrationTest,LuaConcurrencyIntegrationTest
+```
+
+The integration tests exercise real `SCRIPT LOAD` / `EVALSHA`, force a genuine `NOSCRIPT` by
+flushing the Redis script cache mid-test, and verify zero lost updates across 30 concurrent
+threads performing 600 Lua increments.

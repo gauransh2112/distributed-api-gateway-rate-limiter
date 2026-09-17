@@ -1,10 +1,12 @@
 package com.gauransh.gateway.redis.service;
 
 import com.gauransh.gateway.redis.exception.RedisStorageException;
+import com.gauransh.gateway.redis.script.LuaExecutor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -13,13 +15,18 @@ import java.util.Optional;
  *
  * <p>Handles operation execution, connection delegation, atomic primitives, TTL management, and translation
  * of Spring Data / Lettuce exceptions into domain-specific {@link RedisStorageException}.</p>
+ *
+ * <p>Atomic multi-step workflows are delegated unchanged to the module's {@link LuaExecutor}, which
+ * owns script registration, {@code EVALSHA} execution, and Lua failure translation.</p>
  */
 public class DefaultRedisService implements RedisService {
 
     private final StringRedisTemplate redisTemplate;
+    private final LuaExecutor luaExecutor;
 
-    public DefaultRedisService(StringRedisTemplate redisTemplate) {
+    public DefaultRedisService(StringRedisTemplate redisTemplate, LuaExecutor luaExecutor) {
         this.redisTemplate = Objects.requireNonNull(redisTemplate, "StringRedisTemplate must not be null");
+        this.luaExecutor = Objects.requireNonNull(luaExecutor, "LuaExecutor must not be null");
     }
 
     @Override
@@ -252,6 +259,11 @@ public class DefaultRedisService implements RedisService {
         } catch (Exception e) {
             throw new RedisStorageException("HASH_DELETE", key, e.getMessage(), e);
         }
+    }
+
+    @Override
+    public <T> T executeLua(String scriptName, Class<T> resultType, List<String> keys, List<String> args) {
+        return luaExecutor.executeLua(scriptName, resultType, keys, args);
     }
 
     private void validateKey(String key) {

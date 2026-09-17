@@ -1,7 +1,9 @@
 package com.gauransh.gateway.ratelimiter.model;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -18,7 +20,7 @@ import java.util.Optional;
  * @param httpMethod HTTP method (e.g. GET, POST, PUT, DELETE)
  * @param timestamp timestamp when request reached the gateway
  * @param ipAddress client remote IP address
- * @param requestHeaders unmodifiable map of HTTP request headers
+ * @param requestHeaders deeply unmodifiable map of HTTP request headers
  */
 public record RateLimitContext(
         String clientId,
@@ -34,7 +36,36 @@ public record RateLimitContext(
         Objects.requireNonNull(timestamp, "timestamp must not be null");
         Objects.requireNonNull(ipAddress, "ipAddress must not be null");
         clientId = clientId != null ? clientId : ipAddress;
-        requestHeaders = requestHeaders != null ? Map.copyOf(requestHeaders) : Collections.emptyMap();
+        requestHeaders = deepCopyHeaders(requestHeaders);
+    }
+
+    /**
+     * Creates a deeply unmodifiable copy of the supplied header map.
+     *
+     * <p>{@link Map#copyOf(Map)} alone is a shallow copy: it makes the map unmodifiable but keeps
+     * the caller's {@link List} instances as values, leaving them mutable. A context is therefore
+     * only genuinely immutable, and safe to publish across threads, once each value list is copied
+     * as well.</p>
+     *
+     * <p>Each value list is copied into a private {@link ArrayList} and wrapped with
+     * {@link Collections#unmodifiableList(List)} rather than copied with {@link List#copyOf(java.util.Collection)}.
+     * Both produce a list that rejects mutation, but {@code List.copyOf} additionally rejects null
+     * elements, which would turn a defensive copy into an input-validation change: header values
+     * that this type previously accepted would start throwing. The backing list is created here and
+     * never escapes, so the wrapper is effectively immutable while remaining null-tolerant.</p>
+     *
+     * @param headers source header map, may be null
+     * @return an unmodifiable map whose value lists are themselves unmodifiable
+     */
+    private static Map<String, List<String>> deepCopyHeaders(Map<String, List<String>> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, List<String>> copy = new LinkedHashMap<>(headers.size());
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            copy.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(entry.getValue())));
+        }
+        return Map.copyOf(copy);
     }
 
     /**

@@ -13,6 +13,21 @@ import java.util.Objects;
  * <p><strong>Thread Safety Invariant:</strong> This class is <em>not</em> internally synchronized.
  * All mutations and reads must occur exclusively inside atomic operations (such as
  * {@link java.util.concurrent.ConcurrentHashMap#compute}) managed by the caller.</p>
+ *
+ * <p>This is the only mutable object the rate limiter package publishes into a shared map, so the
+ * confinement rule above is a hard invariant rather than a style preference:</p>
+ * <ul>
+ *   <li>An instance must never be returned, cached, or read outside the {@code compute} call that
+ *       owns its key. Escaping the remapping function drops the happens-before edge that
+ *       {@link java.util.concurrent.ConcurrentHashMap} establishes between successive
+ *       {@code compute} calls, and concurrent {@link ArrayDeque} mutation corrupts the deque
+ *       silently rather than failing fast.</li>
+ *   <li>Adding an accessor that hands this object to a caller re-opens that hole, however
+ *       convenient it looks. Derive a value inside {@code compute} and return the value instead.</li>
+ * </ul>
+ *
+ * <p>The invariant is enforced by test, not by the compiler: see
+ * {@code SlidingWindowLogStateIntegrityTest}.</p>
  */
 public class SlidingWindowLog {
 

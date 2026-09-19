@@ -1,8 +1,8 @@
 # Concurrency Model
 
-Version: 1.0
+Version: 1.1
 
-Status: Implemented (Sprint 13 — Thread Safety)
+Status: Implemented (Sprint 13 — Thread Safety; Sprint 14 — Synchronization & Locking)
 
 Related Documents:
 `Development_Playbook.md` (Phase 5 — Concurrency & Thread Safety),
@@ -219,32 +219,172 @@ never bounds, so a test cannot pass merely because the scheduler happened to ser
 | `SlidingWindowLogStateIntegrityTest` | The confined mutable deque survives 80-thread contention intact, across repeated runs, including full and partial eviction |
 | `RateLimitContextImmutabilityTest` | Deep immutability at both levels, plus consistent reads when one context is published to 40 threads |
 | `LuaScriptLoaderConcurrencyTest` | The script cache stays consistent under concurrent reads, concurrent reloads, and reads overlapping reloads |
+| `PolicySnapshotConsistencyTest` | All five algorithms resolve the policy exactly once per request, evaluate against one snapshot, and hold that one-to-one ratio under 40 concurrent requests |
 
 Per-algorithm same-key contention tests from Sprints 3–7 remain in place and unchanged.
 
 ---
 
-## 10. Remaining Work
+## 10. Synchronization & Locking Decision (Sprint 14)
+
+**Version 1 introduces no application-level locks.** This is an architectural position recorded in
+`REDIS_DESIGN.md`, not a shortcut:
+
+> *Application-Level Locks — Version 1 Does Not Use `synchronized`, `ReentrantLock`,
+> `ReadWriteLock`. Reason: Application locks work only inside one JVM. They cannot coordinate
+> multiple Gateway instances.*
+
+> *Distributed Locks — Version 1 Does Not Use Redis Distributed Locks… Lua scripts already provide
+> the required atomicity. Distributed locks would increase latency, complexity, operational
+> overhead without additional benefit.*
+
+`Engineering_contracts.md` states the same for the rate limiter — *"Distributed synchronization
+relies on Redis, not JVM locks"* — and for observability — *"Lock-free whenever practical"*.
+The reserved key prefix `gateway:locks` appears in `REDIS_DESIGN.md` only under **Future
+Evolution**, confirming distributed locking is out of scope for Version 1.
+
+The reasons, stated plainly:
+
+- **JVM locks are process-local.** A lock is an object header or an AQS state word in one process's
+  heap. Two Gateway instances have two heaps; instance A's lock constrains nothing in instance B.
+- **They cannot coordinate multiple instances.** The moment the Gateway scales past one replica,
+  JVM locking gives the *illusion* of coordination while shared state is corrupted exactly as before.
+- **`ConcurrentHashMap.compute` already provides the local atomicity a lock would supply.** It holds
+  the bin lock for the key across the whole read-calculate-write sequence.
+- **Immutable state provides safe publication.** A swapped-in record is either fully visible or not
+  visible at all; no `volatile` and no lock is needed for visibility.
+- **Redis and Lua provide distributed atomicity.** That boundary is established in Sprints 11–12 and
+  is not re-implemented with JVM constructs.
+
+Verified at the time of writing: `src/main` contains zero locking constructs. The only occurrence of
+the word `synchronized` anywhere in production code is the sentence *"This class is not internally
+synchronized"* in the `SlidingWindowLog` Javadoc.
+
+---
+
+## 11. Lock Granularity Analysis
+
+Evaluated for completeness. None is implemented, because each is either redundant with mechanisms
+already in place or protects a mutation that does not occur.
+
+| Option | Contention | Memory | Scalability | Isolation | Failure modes | Verdict |
+|---|---|---|---|---|---|---|
+| Global lock | Severe — every client serialized | O(1) | Does not scale | None | Convoy effect; one slow client blocks all | Rejected |
+| Per-key lock | Low | O(active keys), **unbounded** | Good | Full | Lock-map eviction is itself a concurrency problem; leaks without it | Rejected |
+| Striped lock | Low, bounded | O(stripes) | Good | Approximate — hash collisions share a stripe | False sharing between unrelated keys | Rejected |
+| `ReadWriteLock` | Low for reads | O(1) | Good read scaling | N/A | Writer starvation; pointless where no writer exists | Rejected |
+
+The decisive point: **`ConcurrentHashMap` already is a striped lock.** Its bin-level locking is
+precisely the per-key/striped design above, implemented in the JDK, with the lock-lifecycle problem
+already solved. A `LockManager` layered on top would re-implement the JDK's own mechanism — less
+tested, with a lock-eviction bug waiting to be written — and would nest a second lock inside the
+first.
+
+Three specific candidates and why each was rejected:
+
+- **`LuaScriptLoader.scriptCache`** — read-mostly with rare writes, the textbook `ReadWriteLock`
+  case. `ConcurrentHashMap` already gives lock-free reads *and* atomic writes, and `reload()` is
+  idempotent (same body ⇒ same SHA), so concurrent writers converge. A lock would add blocking to
+  the hot read path to protect a write that cannot conflict.
+- **`RateLimiterProperties`** — the classic config-hot-reload `ReadWriteLock` case. There is no
+  hot-reload: nothing calls a setter at runtime. A lock would protect a mutation that does not exist.
+- **`SlidingWindowLog`'s mutable deque** — a mutable object in a shared map, the classic "needs a
+  lock" shape. It is already inside one: the CHM bin lock held by `compute`.
+
+---
+
+## 12. Deadlock Analysis
+
+**No explicit lock infrastructure exists, so there is no application-level deadlock surface.**
+
+- **Lock ordering:** a lock-ordering problem requires at least two locks. There are zero.
+- **Nested locks:** none. The only implicit lock is the CHM bin lock held inside `compute`, and no
+  remapping function acquires anything else — none calls another `compute`, another limiter, or
+  Redis. Verified by reading all five remapping functions.
+- **Lock cycles:** none.
+- **Lock retention / leakage:** none — there is no `lock()` without `unlock()` because there is no
+  `lock()`.
+
+One genuine blocking point does exist on the request path and is worth naming, because it is where a
+request thread can actually stall: the Lettuce network call to Redis. It is bounded by
+`application.yml` (`connect-timeout: 2000ms`, `timeout: 2000ms`), not by a lock, and no JVM lock
+would improve it.
+
+This analysis holds only while the zero-lock property holds. Introducing a single lock reintroduces
+the entire deadlock surface and invalidates this section.
+
+---
+
+## 13. Policy Snapshot Consistency (Sprint 14)
+
+**Each request evaluation must resolve its policy exactly once and evaluate against that one
+snapshot.**
+
+Every algorithm previously called `RateLimitPolicyResolver.resolvePolicy(context)` **twice** per
+request — once for capacity, once for the window or rate — then used both results as though they
+were one policy:
+
+```
+allowRequest(context)
+   |
+   +-- resolvePolicy(context) -> capacity        (policy version A)
+   +-- resolvePolicy(context) -> window / rate   (policy version B)
+```
+
+A resolver backed by live-reloading configuration could return a different policy version between
+the two calls, producing a decision matching **no configured policy**: capacity from one version
+combined with a window from another. The corrected flow resolves once:
+
+```
+allowRequest(context)
+   |
+   v
+resolvePolicy(context)
+   |
+   v
+RateLimitPolicy snapshot
+   |
+   +---- capacity
+   +---- window / duration
+   +---- refill or leak rate
+```
+
+**This was fixed by restructuring, not by locking.** The resolver is an externally injected
+strategy; a limiter cannot lock state it does not own, and the defect is a compound *read*, not a
+data race. Reading once is both the simpler and the correct answer.
+
+Exposure was latent: `RateLimitPolicyResolver` has no implementation in `src/main` and production
+wiring passes `null`, so both branches were unreachable in practice. It is fixed because the
+guarantee is what a future policy store will rely on.
+
+`PolicySnapshotConsistencyTest` pins it down across all five algorithms — exactly one resolution per
+request, one snapshot per decision, and one-to-one resolution under 40 concurrent requests. All 15
+of its cases fail against the previous two-call implementation.
+
+---
+
+## 14. Remaining Work
 
 Deferred by roadmap boundary, not by oversight:
 
-- **Sprint 14 — Synchronization & Locking:** `LockManager`, `ReentrantLock`, `ReadWriteLock`,
-  striped per-key locks.
+- **Sprint 14 — Synchronization & Locking:** completed. The outcome was that no application-level
+  locking is warranted; see section 10. `LockManager`, `ReentrantLock`, `ReadWriteLock` and striped
+  per-key locks were evaluated and rejected, not deferred.
 - **Sprint 15 — Lock-Free Improvements:** CAS retry designs, `LongAdder`, concurrency and
   synchronization-strategy benchmarks.
 - **Phase 5 packages** `concurrency/`, `executor/`, `stress/`, `benchmark/` and their components
   (`GatewayExecutor`, `ThreadPoolConfiguration`, `StressTestRunner`, `ConcurrentRequestGenerator`,
-  `ConcurrencyBenchmark`) span Sprints 13–15 and are not created in Sprint 13.
+  `ConcurrencyBenchmark`) span Sprints 13–15 and are not created in Sprints 13 or 14.
 - **Concurrent metrics collection** and a **thread-safe configuration cache** are Phase 5
   deliverables with no subject in the current codebase: the metrics publisher is a No-Op and no
   configuration cache exists. Building them is new functionality, not thread-safety hardening.
 - **Minor, non-thread-safety observation:** `Map.copyOf` iteration order is unspecified and varies
   between JVM runs, so `getFirstHeader` picks arbitrarily between header names that differ only in
-  case. Pre-existing, unrelated to concurrency, and out of Sprint 13 scope.
+  case. Pre-existing, unrelated to concurrency, and outside both Sprint 13 and Sprint 14 scope.
 
 ---
 
-## 11. Success Criteria
+## 15. Success Criteria
 
 Sprint 13 is complete when:
 
@@ -253,6 +393,14 @@ Sprint 13 is complete when:
 - No distributed correctness is delegated to JVM locks.
 - Existing algorithm semantics are unchanged.
 - Concurrent tests demonstrate correctness with exact assertions.
+- The full Maven suite passes.
+
+Sprint 14 is complete when:
+
+- The locking question is answered from repository evidence rather than by adding locks.
+- No application-level lock is introduced.
+- No distributed correctness is delegated to JVM synchronization.
+- Each request evaluates against exactly one policy snapshot.
 - The full Maven suite passes.
 
 ---

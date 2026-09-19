@@ -62,8 +62,9 @@ public class FixedWindowRateLimiter implements RateLimiter {
         String rawKey = keyResolver.resolveKey(context);
         String key = (rawKey != null && !rawKey.isBlank()) ? rawKey : RateLimitConstants.DEFAULT_ANONYMOUS_KEY;
 
-        long capacity = resolveCapacity(context);
-        Duration windowDuration = resolveWindowDuration(context);
+        RateLimitPolicy policy = resolvePolicy(context);
+        long capacity = resolveCapacity(policy);
+        Duration windowDuration = resolveWindowDuration(policy);
 
         if (windowDuration == null || windowDuration.isNegative() || windowDuration.isZero()) {
             throw new IllegalArgumentException("Rate limit window duration must be strictly positive");
@@ -108,22 +109,34 @@ public class FixedWindowRateLimiter implements RateLimiter {
         return RateLimitDecision.rejected(capacity, resetTime, retryAfter, RateLimitConstants.REASON_EXCEEDED);
     }
 
-    private long resolveCapacity(RateLimitContext context) {
-        if (policyResolver != null) {
-            RateLimitPolicy policy = policyResolver.resolvePolicy(context);
-            if (policy != null) {
-                return policy.capacity();
-            }
+    /**
+     * Resolves the policy snapshot governing a single request evaluation.
+     *
+     * <p>Called exactly once per {@code allowRequest}. Every policy-derived value used by that
+     * evaluation is read from the returned snapshot, so one request can never combine values taken
+     * from two different resolutions — for example a capacity from one policy version and a window
+     * from another, yielding a decision matching no configured policy.</p>
+     *
+     * <p>The resolver is an optional injected strategy; {@code null} means no policy applies and
+     * configured defaults are used.</p>
+     *
+     * @param context request context
+     * @return the resolved policy, or {@code null} when no resolver is configured or none matches
+     */
+    private RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        return policyResolver != null ? policyResolver.resolvePolicy(context) : null;
+    }
+
+    private long resolveCapacity(RateLimitPolicy policy) {
+        if (policy != null) {
+            return policy.capacity();
         }
         return properties.getDefaultCapacity();
     }
 
-    private Duration resolveWindowDuration(RateLimitContext context) {
-        if (policyResolver != null) {
-            RateLimitPolicy policy = policyResolver.resolvePolicy(context);
-            if (policy != null && policy.window() != null) {
-                return policy.window();
-            }
+    private Duration resolveWindowDuration(RateLimitPolicy policy) {
+        if (policy != null && policy.window() != null) {
+            return policy.window();
         }
         return properties.getDefaultWindow();
     }

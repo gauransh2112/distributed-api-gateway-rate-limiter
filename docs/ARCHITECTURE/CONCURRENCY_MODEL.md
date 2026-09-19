@@ -1,8 +1,9 @@
 # Concurrency Model
 
-Version: 1.1
+Version: 1.2
 
-Status: Implemented (Sprint 13 — Thread Safety; Sprint 14 — Synchronization & Locking)
+Status: Implemented (Sprint 13 — Thread Safety; Sprint 14 — Synchronization & Locking).
+Sprint 15 — Lock-Free Improvements: measurement stage complete, optimization decision pending review.
 
 Related Documents:
 `Development_Playbook.md` (Phase 5 — Concurrency & Thread Safety),
@@ -363,15 +364,131 @@ of its cases fail against the previous two-call implementation.
 
 ---
 
-## 14. Remaining Work
+## 14. Contention Measurement (Sprint 15 — measurement stage)
+
+Sprints 13 and 14 established that the concurrency design is *correct*. Neither measured how it
+*behaves* under contention: the Sprint 8 harness is single-threaded by construction and says so in
+its own report — *"multi-threaded lock contention is evaluated in Phase 5"*. Sprint 15 closes that
+gap before considering any lock-free change, because the repository rule is measure first,
+optimize second.
+
+### Methodology
+
+`ContentionBenchmarkRunner` (test scope, measurement infrastructure, asserts nothing) releases N
+workers simultaneously against one limiter instance and records per-operation latency.
+
+| Parameter | Value |
+|---|---|
+| Subject | `ConcurrentHashMap.compute()` — the per-key atomic state transition |
+| Thread counts | 8, 32, 64 |
+| Operations per thread | 10,000 |
+| Warm-up | 2,000 ops per thread, discarded, on a separate limiter instance |
+| Runs per configuration | 3 (mean and standard deviation reported) |
+| Key distributions | same-key (one shared key) and multi-key (one key per thread) |
+| Clock | fixed — no window rolls, no refill, no leak during a run |
+| Capacity | 1,000,000,000 — every request admitted, so every thread takes the state-writing path |
+| Coordination | ready latch + start latch; the timer starts only after every worker has parked |
+| Environment | OpenJDK 21.0.10, Linux x86-64, **4 available processors** |
+
+Contexts are built before the measured region, so context construction (which performs a deep
+header copy) is excluded. Full data: `benchmarks/reports/contention_benchmark_report.md`.
+
+### Results
+
+Aggregate throughput, mean of 3 runs:
+
+| Algorithm | Same-key @64 | Multi-key @64 | Multi-key advantage | Same-key 8→64 threads | Avg latency 8→64 threads |
+|---|---:|---:|---:|---|---|
+| Fixed Window | 3,432,501 ops/s | 13,832,671 ops/s | **4.0×** | +15% | 1.94 → 11.27 µs |
+| Sliding Window Counter | 2,433,360 | 10,905,182 | **4.5×** | +26% | 3.07 → 18.19 µs |
+| Sliding Window Log | 1,760,076 | 7,711,305 | **4.4×** | +15% | 4.30 → 26.65 µs |
+| Token Bucket | 1,880,582 | 10,378,879 | **5.5×** | +1% | 3.62 → 25.42 µs |
+| Leaky Bucket | 1,852,299 | 9,744,605 | **5.3×** | +20% | 4.44 → 25.72 µs |
+
+Across all 90 configurations and 31.2 million operations: **zero errors**.
+
+### Interpretation
+
+**1. Fine-grained striping works.** Independent keys sustain 3.6–5.7× the throughput of a single
+shared key, in every algorithm at every thread count. `ConcurrentHashMap`'s bin-level locking
+delivers the per-key parallelism the design depends on — the property a hand-written lock manager
+would have had to reproduce.
+
+**2. Same-key contention saturates but does not collapse.** Multiplying threads by eight changes
+same-key throughput by between +1% and +26% — flat, not degraded. There is no convoy effect, no
+livelock, no throughput cliff. This is the expected signature of a saturated critical section.
+
+**3. Latency growth is queueing, not pathology.** Under same-key load, average latency rises
+roughly linearly with thread count while throughput stays flat — exactly what Little's Law predicts
+for a saturated serialization point. Median latency barely moves (Fixed Window: 0.50 → 0.53 µs),
+so the growth is waiting time, not slower work.
+
+**4. The same-key ceiling is a correctness requirement, not an implementation artifact.** One key's
+state transition must be atomic, so it is serialized by definition. CAS would not remove that
+serialization — it would convert waiting into retrying, and for these time-dependent algorithms a
+retry re-reads the clock and recomputes a different result (section 11).
+
+**5. The absolute numbers leave ample headroom.** The slowest algorithm sustains roughly 1.5 million
+decisions per second against a single hot key. A gateway serving 10,000 requests per second to one
+client would use well under 1% of that.
+
+### Was critical-section narrowing demonstrated?
+
+**No.** The hypothesis was that Token Bucket, Leaky Bucket and Sliding Window Log allocate
+`Instant`/`Duration` objects inside the remapping function while Fixed Window does not, lengthening
+their critical sections. Fixed Window is indeed the fastest algorithm under same-key contention
+(3.4M vs 1.9M ops/s), but **that comparison cannot attribute the difference to allocation
+placement**: Fixed Window also does far less arithmetic, inside and outside the lock, and it leads
+by a similar margin in the *multi-key* case where contention is not the limiter. The two variables
+are confounded.
+
+Isolating the effect would require building a narrowed variant of one algorithm and measuring it
+against the current one — a production change. Since the measurement does not demonstrate a
+benefit, the code stays unchanged.
+
+### Limitations
+
+These numbers describe this workload on this machine. They are an engineering measurement, not a
+general performance claim.
+
+1. **Only 4 available processors.** At 32 and 64 threads the machine is heavily oversubscribed, so
+   OS scheduling contributes alongside lock contention. The average-versus-P99 inversion under
+   same-key load (avg 11.27 µs, P99 2.46 µs for Fixed Window at 64 threads) shows a small number of
+   descheduled operations dominating the mean.
+2. **Timing overhead.** Two `System.nanoTime()` calls wrap each operation, which is material at
+   these latencies. It is constant across configurations, so comparisons hold while absolute values
+   are inflated.
+3. **Run-to-run variance.** Same-key measurements are stable (coefficient of variation 2.6–4.7% at
+   64 threads); multi-key measurements are noisier (up to 34%). The 4–5× same-key/multi-key
+   separation is far larger than the noise, but smaller multi-key differences should not be read as
+   significant.
+4. **Fixed clock.** Isolates the concurrency mechanism; does not represent production time
+   progression.
+5. **Sliding Window Log accumulates state.** With a fixed clock nothing expires, so its deque grows
+   through the run and its numbers include costs the others do not incur.
+6. **Not JMH.** No fork isolation, dead-code-elimination guards, or blackholes.
+7. **One implementation measured.** No competing implementation was built, deliberately — a
+   benchmark against an architecturally rejected design would not be useful evidence.
+
+### Conclusion of the measurement stage
+
+The data supports **Case A**: the current implementation behaves acceptably under every contention
+pattern measured. No bottleneck was found, so **no production optimization is justified on this
+evidence**, and `ConcurrentHashMap.compute()` remains the production mechanism. Sprint 15 is not
+closed by this section; the optimization decision rests with architecture review.
+
+---
+
+## 15. Remaining Work
 
 Deferred by roadmap boundary, not by oversight:
 
 - **Sprint 14 — Synchronization & Locking:** completed. The outcome was that no application-level
   locking is warranted; see section 10. `LockManager`, `ReentrantLock`, `ReadWriteLock` and striped
   per-key locks were evaluated and rejected, not deferred.
-- **Sprint 15 — Lock-Free Improvements:** CAS retry designs, `LongAdder`, concurrency and
-  synchronization-strategy benchmarks.
+- **Sprint 15 — Lock-Free Improvements:** measurement stage complete (section 14). CAS retry
+  designs and `LongAdder` were analysed and found unjustified; the contention benchmark found no
+  bottleneck. Any production optimization awaits architecture review.
 - **Phase 5 packages** `concurrency/`, `executor/`, `stress/`, `benchmark/` and their components
   (`GatewayExecutor`, `ThreadPoolConfiguration`, `StressTestRunner`, `ConcurrentRequestGenerator`,
   `ConcurrencyBenchmark`) span Sprints 13–15 and are not created in Sprints 13 or 14.
@@ -384,7 +501,7 @@ Deferred by roadmap boundary, not by oversight:
 
 ---
 
-## 15. Success Criteria
+## 16. Success Criteria
 
 Sprint 13 is complete when:
 

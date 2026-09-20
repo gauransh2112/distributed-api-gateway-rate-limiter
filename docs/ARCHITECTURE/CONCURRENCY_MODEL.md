@@ -1,9 +1,9 @@
 # Concurrency Model
 
-Version: 1.2
+Version: 1.3
 
-Status: Implemented (Sprint 13 — Thread Safety; Sprint 14 — Synchronization & Locking).
-Sprint 15 — Lock-Free Improvements: measurement stage complete, optimization decision pending review.
+Status: Implemented (Sprint 13 — Thread Safety; Sprint 14 — Synchronization & Locking;
+Sprint 15 — Lock-Free Improvements, closed with no production change).
 
 Related Documents:
 `Development_Playbook.md` (Phase 5 — Concurrency & Thread Safety),
@@ -474,8 +474,18 @@ general performance claim.
 
 The data supports **Case A**: the current implementation behaves acceptably under every contention
 pattern measured. No bottleneck was found, so **no production optimization is justified on this
-evidence**, and `ConcurrentHashMap.compute()` remains the production mechanism. Sprint 15 is not
-closed by this section; the optimization decision rests with architecture review.
+evidence**, and `ConcurrentHashMap.compute()` remains the production mechanism.
+
+**Accepted at architecture review. Sprint 15 is closed with no production change.**
+
+The critical-section narrowing question stays open by design rather than by omission, and this
+machine could not have settled it: removing two small objects from a roughly 0.78 µs critical
+section is an estimated 3–5% effect, against a measured run-to-run variation of 2.6–4.7% over three
+runs on four oversubscribed cores. An experiment that cannot resolve its own effect size does not
+produce evidence. Settling it properly would need a higher run count, a machine where thread count
+does not exceed core count, and a microbenchmark harness with dead-code-elimination guards — work
+that earns its place only once profiling shows the in-memory decision path actually constraining
+something.
 
 ---
 
@@ -486,9 +496,11 @@ Deferred by roadmap boundary, not by oversight:
 - **Sprint 14 — Synchronization & Locking:** completed. The outcome was that no application-level
   locking is warranted; see section 10. `LockManager`, `ReentrantLock`, `ReadWriteLock` and striped
   per-key locks were evaluated and rejected, not deferred.
-- **Sprint 15 — Lock-Free Improvements:** measurement stage complete (section 14). CAS retry
-  designs and `LongAdder` were analysed and found unjustified; the contention benchmark found no
-  bottleneck. Any production optimization awaits architecture review.
+- **Sprint 15 — Lock-Free Improvements:** completed with no production change. CAS retry designs
+  and `LongAdder` were analysed and found unjustified (sections 11 and 13 of the Sprint 15
+  reconnaissance); the contention benchmark found no bottleneck (section 14). Critical-section
+  narrowing remains an open question, deliberately unresolved — see section 14 for the conditions
+  under which it would be worth measuring.
 - **Phase 5 packages** `concurrency/`, `executor/`, `stress/`, `benchmark/` and their components
   (`GatewayExecutor`, `ThreadPoolConfiguration`, `StressTestRunner`, `ConcurrentRequestGenerator`,
   `ConcurrencyBenchmark`) span Sprints 13–15 and are not created in Sprints 13 or 14.
@@ -518,6 +530,14 @@ Sprint 14 is complete when:
 - No application-level lock is introduced.
 - No distributed correctness is delegated to JVM synchronization.
 - Each request evaluates against exactly one policy snapshot.
+- The full Maven suite passes.
+
+Sprint 15 is complete when:
+
+- The contention behaviour of the existing design is measured rather than assumed.
+- The measurement is reproducible and its limitations are stated.
+- Any optimization is justified by that evidence, or declined because the evidence does not support it.
+- No lock-free mechanism is introduced without a demonstrated benefit.
 - The full Maven suite passes.
 
 ---

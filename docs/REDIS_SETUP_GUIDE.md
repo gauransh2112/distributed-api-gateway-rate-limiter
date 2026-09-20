@@ -238,3 +238,111 @@ Gateway from starting, and unit tests remain 100% independent of Redis.
 The integration tests exercise real `SCRIPT LOAD` / `EVALSHA`, force a genuine `NOSCRIPT` by
 flushing the Redis script cache mid-test, and verify zero lost updates across 30 concurrent
 threads performing 600 Lua increments.
+
+---
+
+## 12. Sprint 16 — Distributed Fixed Window Rate Limiter
+
+Sprint 16 is the first increment of the Distributed Rate Limiter phase, and the first time Redis
+actually makes a rate limiting decision.
+
+Sprints 9–12 built the distributed infrastructure; Sprints 13–15 proved the concurrency model
+correct. Until now every algorithm kept its counters in the JVM heap, which means a client hitting
+two Gateway instances received **two independent quotas**. `RedisFixedWindowRateLimiter` moves the
+counter into Redis so all instances share one.
+
+### Component
+
+| Class | Role |
+|---|---|
+| `RedisFixedWindowRateLimiter` | Fixed Window algorithm with the counter stored in Redis |
+
+It implements the existing `RateLimiter` contract, so nothing upstream changes.
+
+### Why no new Lua script
+
+ADR-0009 states that *"Simple Fixed Window may continue using native Redis commands"*, and Sprint 12's
+`increment.lua` already performs exactly the Fixed Window transition:
+
+```
+INCRBY counter
+   |
+set TTL only if the key has no expiration
+   |
+return the new count
+```
+
+Applying the TTL only when absent is what keeps the window **fixed** rather than sliding: later
+requests in the same window increment the counter without extending its lifetime. The remaining
+step — comparing the returned count against capacity — is a pure comparison and needs no atomicity.
+
+### Key schema
+
+Built through `RedisKeyBuilder`, so keys obey the Engineering Contract schema
+`environment:module:resource:identifier`:
+
+```
+dev:ratelimiter:fixed:user-101:1722587600
+                                ^ window start, epoch seconds
+```
+
+Each window owns its own key, so an expired window's counter is simply abandoned to its TTL and
+never needs resetting.
+
+> **Note.** The Redis design document shows this key as `gateway:ratelimit:fixed:<clientId>:<window>`,
+> which has five segments and no environment prefix, and conflicts with the four-segment schema the
+> Engineering Contract mandates and `RedisKeyBuilder` enforces. The Engineering Contract is the
+> higher authority, so the builder schema is used and `RedisKeyBuilder` was left unchanged.
+
+### TTL
+
+```
+TTL = window duration + 10 second safety buffer
+```
+
+The buffer, documented in the Redis design, prevents a counter expiring fractionally before its
+window closes because of clock differences between instances or processing delay.
+
+### Enabling it
+
+Uses the existing Redis configuration block — no new property was introduced:
+
+```yaml
+gateway:
+  rate-limit:
+    algorithm: FIXED_WINDOW
+    redis:
+      enabled: true      # false (default) keeps the in-memory limiter
+```
+
+The algorithm is the same Fixed Window counter either way; only the store differs, which is why
+this is a storage flag rather than a new algorithm constant.
+
+### Concurrency
+
+The limiter holds **no mutable JVM state** — no map, no lock, no atomic. Correctness rests entirely
+on Redis executing `increment.lua` to completion without interruption, which serializes the counter
+transition across every Gateway instance. A JVM lock could not provide this, because it coordinates
+only threads inside one process.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=RedisFixedWindowRateLimiterTest
+.\mvnw.cmd test -Dtest=RedisFixedWindowRateLimiterIntegrationTest
+```
+
+The integration suite runs two independent limiter instances against one Redis and asserts that a
+client cannot obtain a separate quota per instance — including under 40 concurrent threads split
+across both instances, where exactly the configured quota is admitted.
+
+### Known limitations
+
+- **Failure policy is not implemented.** Redis failures propagate as the Redis module's exceptions.
+  Choosing between fail-open and fail-closed is a separate documented deliverable of this phase and
+  was deliberately not decided here.
+- **Window durations below one second are not supported.** The key's window component is expressed
+  in epoch seconds, so sub-second windows would map adjacent windows onto the same key. The
+  documented configuration surface expresses windows in seconds or minutes.
+- **Only Fixed Window is distributed.** Sliding Window Counter, Sliding Window Log, Token Bucket and
+  Leaky Bucket remain in-memory and per-instance.

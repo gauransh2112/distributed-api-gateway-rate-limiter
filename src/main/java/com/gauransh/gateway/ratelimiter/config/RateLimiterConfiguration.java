@@ -2,6 +2,7 @@ package com.gauransh.gateway.ratelimiter.config;
 
 import com.gauransh.gateway.ratelimiter.RateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.FixedWindowRateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.RedisFixedWindowRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.leakybucket.LeakyBucketRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.SlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowlog.SlidingWindowLogRateLimiter;
@@ -9,6 +10,8 @@ import com.gauransh.gateway.ratelimiter.algorithm.tokenbucket.TokenBucketRateLim
 import com.gauransh.gateway.ratelimiter.noop.NoOpRateLimiter;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
+import com.gauransh.gateway.redis.key.RedisKeyBuilder;
+import com.gauransh.gateway.redis.service.RedisService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -33,9 +36,23 @@ public class RateLimiterConfiguration {
             RateLimiterProperties properties,
             @Autowired(required = false) RateLimitKeyResolver keyResolver,
             @Autowired(required = false) RateLimitPolicyResolver policyResolver,
-            Clock clock
+            Clock clock,
+            @Autowired(required = false) RedisService redisService,
+            @Autowired(required = false) RedisKeyBuilder redisKeyBuilder
     ) {
         if (properties.getAlgorithm() == RateLimiterAlgorithm.FIXED_WINDOW) {
+            // Distributed storage is selected through the existing Redis configuration block
+            // rather than a separate algorithm constant: the algorithm is the same Fixed Window
+            // counter either way, only the store differs.
+            if (properties.getRedis().isEnabled()) {
+                if (redisService == null || redisKeyBuilder == null) {
+                    throw new IllegalStateException(
+                            "Redis-backed rate limiting is enabled (gateway.rate-limit.redis.enabled=true) "
+                                    + "but the Redis storage beans are unavailable");
+                }
+                return new RedisFixedWindowRateLimiter(
+                        properties, keyResolver, policyResolver, clock, redisService, redisKeyBuilder);
+            }
             return new FixedWindowRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         if (properties.getAlgorithm() == RateLimiterAlgorithm.SLIDING_WINDOW_COUNTER) {

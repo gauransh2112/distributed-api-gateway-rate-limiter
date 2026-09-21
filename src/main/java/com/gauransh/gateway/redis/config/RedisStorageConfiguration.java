@@ -46,7 +46,9 @@ public class RedisStorageConfiguration {
     public LuaScriptLoader luaScriptLoader(StringRedisTemplate stringRedisTemplate) {
         LuaScriptLoader loader = new LuaScriptLoader(
                 stringRedisTemplate,
-                List.of(LuaScriptLoader.INCREMENT_SCRIPT, LuaScriptLoader.SLIDING_COUNTER_SCRIPT));
+                List.of(LuaScriptLoader.INCREMENT_SCRIPT,
+                        LuaScriptLoader.SLIDING_COUNTER_SCRIPT,
+                        LuaScriptLoader.SLIDING_LOG_SCRIPT));
         loader.initialize();
         return loader;
     }

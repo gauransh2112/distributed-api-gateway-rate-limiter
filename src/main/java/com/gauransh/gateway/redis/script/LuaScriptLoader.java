@@ -51,6 +51,9 @@ public class LuaScriptLoader {
     /** Logical name of the Sliding Window Counter evaluation script. */
     public static final String SLIDING_COUNTER_SCRIPT = "sliding_counter.lua";
 
+    /** Logical name of the Sliding Window Log evaluation script. */
+    public static final String SLIDING_LOG_SCRIPT = "sliding_log.lua";
+
     /** Classpath location owning every Lua script shipped with the Gateway. */
     public static final String SCRIPT_BASE_PATH = "redis/scripts/";
 

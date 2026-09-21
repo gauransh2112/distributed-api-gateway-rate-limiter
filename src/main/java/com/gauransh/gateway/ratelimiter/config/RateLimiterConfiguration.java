@@ -6,6 +6,7 @@ import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.RedisFixedWindowRa
 import com.gauransh.gateway.ratelimiter.algorithm.leakybucket.LeakyBucketRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.RedisSlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.SlidingWindowCounterRateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowlog.RedisSlidingWindowLogRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowlog.SlidingWindowLogRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.tokenbucket.TokenBucketRateLimiter;
 import com.gauransh.gateway.ratelimiter.noop.NoOpRateLimiter;
@@ -61,6 +62,11 @@ public class RateLimiterConfiguration {
             return new SlidingWindowCounterRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         if (properties.getAlgorithm() == RateLimiterAlgorithm.SLIDING_WINDOW_LOG) {
+            if (properties.getRedis().isEnabled()) {
+                requireRedisBeans(redisService, redisKeyBuilder);
+                return new RedisSlidingWindowLogRateLimiter(
+                        properties, keyResolver, policyResolver, clock, redisService, redisKeyBuilder);
+            }
             return new SlidingWindowLogRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         if (properties.getAlgorithm() == RateLimiterAlgorithm.TOKEN_BUCKET) {

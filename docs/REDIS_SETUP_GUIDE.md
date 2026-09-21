@@ -452,4 +452,154 @@ Redis, including 40 concurrent threads split across both, admitting exactly the 
   exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
 - **Window durations below one second are not supported**, for the same reason as Fixed Window: the
   key's window component is expressed in epoch seconds.
-- **Sliding Window Log, Token Bucket and Leaky Bucket remain in-memory** and per-instance.
+- **Token Bucket and Leaky Bucket remain in-memory** and per-instance. Sliding Window Log
+  followed in Sprint 18 (section 14).
+
+
+---
+
+## 14. Sprint 18 — Distributed Sliding Window Log
+
+The third Phase 6 deliverable, and the most precise of the window algorithms: instead of counting
+requests, it records each admitted request's timestamp and decides from the timestamps themselves.
+
+### Why this algorithm needs a script
+
+Sliding Window Counter approximates the previous window with a weight. The log does not approximate
+at all — the window is exactly `[now - window, now]`, so the decision is a sequence of three
+dependent steps:
+
+```
+1. evict entries older than now - window
+2. count what remains
+3. admit and record only if count < capacity
+```
+
+Issued as separate commands, two Gateway instances could each read the same count, each conclude
+there is room, and each record — admitting more than capacity. `sliding_log.lua` performs evict,
+count, conditional insert and TTL refresh as one uninterrupted step, so the quota holds across
+every instance.
+
+**Evict before counting, and insert only if the count permits.** The Redis design sketches
+insert-then-count-then-remove-if-over. That order admits a request into the log before deciding on
+it, and would have to undo the insert on rejection. The in-memory `SlidingWindowLogRateLimiter`
+establishes the opposite semantics — a rejected request never enters the log and never consumes
+quota — and the in-memory algorithm is the behavioural reference the distributed version must
+match, so the script evaluates first and writes second.
+
+### Components
+
+| Artifact | Role |
+|---|---|
+| `sliding_log.lua` | Atomic evict / count / conditional-insert over the timestamp log |
+| `RedisSlidingWindowLogRateLimiter` | Algorithm with the request log stored in Redis |
+
+### Keys
+
+```
+dev:ratelimiter:log:user-101
+```
+
+Built through `RedisKeyBuilder`, following the resolution applied since Sprint 16: the Engineering
+Contract schema `environment:module:resource:identifier` outranks the longer example in the Redis
+design document.
+
+**No window component in the key**, unlike Fixed Window and Sliding Window Counter. Those two
+partition time into discrete windows and give each window its own counter key. The log has no
+discrete windows at all — it holds one continuously rolling sequence per client, and the window is
+applied at read time as a score range. One client therefore has exactly one key, for its whole
+lifetime. A consequence worth stating: this algorithm is **not** limited to windows of one second
+or more, because no part of the key is expressed in epoch seconds.
+
+The value is a Redis **sorted set**, score = the request's epoch-millisecond timestamp:
+
+```
+ZREMRANGEBYSCORE key -inf (cutoff     <- exclusive: an entry exactly at the boundary survives
+ZCARD key                             <- entries currently inside the window
+ZADD key <nowMillis> <member>         <- only when the count permits
+```
+
+The exclusive cutoff (`(cutoff`, Redis's exclusive-range syntax) is what makes an entry at exactly
+`now - window` still count as inside the window, matching the in-memory implementation's boundary
+rule.
+
+### The member token
+
+A sorted set is a *set*: two members with the same value are one member, and a second `ZADD` of it
+overwrites the score rather than appending. If the member were the bare timestamp, two requests
+admitted in the same millisecond would collapse into one entry and the client would silently get
+extra quota — and under load, requests landing in the same millisecond is the normal case, not an
+edge case.
+
+The member is therefore a unique token generated per request by the Java side
+(`UUID.randomUUID()`) and passed to the script as an argument, never generated inside the script.
+Scripts must be deterministic; generating randomness inside one is exactly what Redis's scripting
+contract forbids. The integration suite pins this: 40 concurrent requests within one millisecond
+must leave the log holding exactly as many entries as were admitted.
+
+### TTL
+
+```
+TTL = window duration + 10 second safety buffer
+```
+
+The same buffer rule as the other two algorithms, and set with `EXPIRE` on every admitted request —
+**refreshed**, not set-if-absent. Fixed Window sets its TTL once because the key must die when its
+window closes; the log's key has no window of its own and must outlive its newest entry, so its
+lifetime is pushed forward with each admission. An idle client's key expires on its own, which is
+what keeps abandoned logs from accumulating.
+
+### Enabling it
+
+The existing Redis configuration block, unchanged:
+
+```yaml
+gateway:
+  rate-limit:
+    algorithm: SLIDING_WINDOW_LOG
+    redis:
+      enabled: true      # false (default) keeps the in-memory limiter
+```
+
+### Concurrency
+
+No mutable JVM state — no map, no lock, no atomic. Correctness rests on Redis executing
+`sliding_log.lua` to completion without interruption.
+
+**Backward clock drift is deliberately not handled the way the in-memory version handles it.** The
+in-memory limiter clears its log when it observes the clock moving backwards, because its log is
+private to one JVM. Here the log is shared: one instance with a skewed clock clearing it would
+destroy quota state for every other instance, turning a local clock problem into a cluster-wide
+one. A sorted set orders by score regardless of insertion order, so an entry written with an
+earlier timestamp simply sorts earlier and ages out earlier — the log stays consistent without
+intervention.
+
+### Memory characteristic
+
+This is the one algorithm whose storage grows with traffic: a counter is one integer per window,
+whereas the log holds one sorted-set entry per admitted request. Storage per client is therefore
+bounded by capacity, not by a constant — the price paid for exact boundaries. Eviction is not
+deferred to the TTL: every evaluation removes what has aged out, so a client's log never exceeds
+its capacity plus the request being evaluated.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=RedisSlidingWindowLogRateLimiterTest
+.\mvnw.cmd test -Dtest=RedisSlidingWindowLogRateLimiterIntegrationTest
+```
+
+The integration suite proves the boundary precision that distinguishes this algorithm: an entry at
+exactly `now - window` is still active, one millisecond past it releases exactly one slot, and a
+quota spent at the very end of a window cannot be respent immediately after the boundary — the
+2x burst that Fixed Window permits. It also runs two independent limiter instances against one
+Redis, including 40 concurrent threads split across both, admitting exactly the configured quota
+and storing exactly that many entries.
+
+### Known limitations
+
+- **Failure policy is still not implemented.** Redis failures propagate as the Redis module's
+  exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
+- **Storage scales with admitted traffic**, as described above — unlike the counter-based
+  algorithms, whose footprint is constant per client.
+- **Token Bucket and Leaky Bucket remain in-memory** and per-instance.

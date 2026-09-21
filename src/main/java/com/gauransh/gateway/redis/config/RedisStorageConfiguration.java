@@ -45,7 +45,8 @@ public class RedisStorageConfiguration {
     @ConditionalOnMissingBean
     public LuaScriptLoader luaScriptLoader(StringRedisTemplate stringRedisTemplate) {
         LuaScriptLoader loader = new LuaScriptLoader(
-                stringRedisTemplate, List.of(LuaScriptLoader.INCREMENT_SCRIPT));
+                stringRedisTemplate,
+                List.of(LuaScriptLoader.INCREMENT_SCRIPT, LuaScriptLoader.SLIDING_COUNTER_SCRIPT));
         loader.initialize();
         return loader;
     }

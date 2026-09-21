@@ -48,6 +48,9 @@ public class LuaScriptLoader {
     /** Logical name of the infrastructure-level atomic counter script. */
     public static final String INCREMENT_SCRIPT = "increment.lua";
 
+    /** Logical name of the Sliding Window Counter evaluation script. */
+    public static final String SLIDING_COUNTER_SCRIPT = "sliding_counter.lua";
+
     /** Classpath location owning every Lua script shipped with the Gateway. */
     public static final String SCRIPT_BASE_PATH = "redis/scripts/";
 

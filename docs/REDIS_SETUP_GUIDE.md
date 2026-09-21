@@ -344,5 +344,112 @@ across both instances, where exactly the configured quota is admitted.
 - **Window durations below one second are not supported.** The key's window component is expressed
   in epoch seconds, so sub-second windows would map adjacent windows onto the same key. The
   documented configuration surface expresses windows in seconds or minutes.
-- **Only Fixed Window is distributed.** Sliding Window Counter, Sliding Window Log, Token Bucket and
-  Leaky Bucket remain in-memory and per-instance.
+- **Only Fixed Window is distributed** as of this sprint. Sliding Window Counter followed in
+  Sprint 17 (section 13); Sliding Window Log, Token Bucket and Leaky Bucket remain in-memory and
+  per-instance.
+
+---
+
+## 13. Sprint 17 — Distributed Sliding Window Counter
+
+The second Phase 6 deliverable. Where Sprint 16 moved the Fixed Window counter into Redis, this
+moves the Sliding Window Counter — and unlike Fixed Window, it needs a Lua script of its own.
+
+### Why this algorithm needs a script
+
+Fixed Window's transition is "increment, set TTL if absent" — a single-key write that
+`increment.lua` already performed. Sliding Window Counter reads **two** keys, computes a weighted
+estimate, and writes **only if** the result permits it:
+
+```
+estimated = previousCount x previousWeight + currentCount
+previousWeight = (windowDuration - elapsedInCurrentWindow) / windowDuration
+admit when estimated + 1 <= capacity
+```
+
+Run as separate commands, two Gateway instances could each read the same counts, each conclude
+there is room for one more request, and each increment — admitting more than capacity. That is the
+exact hazard ADR-0009 reserves Lua for, so `sliding_counter.lua` performs the whole
+read-calculate-decide-write sequence as one atomic step.
+
+Only admitted requests increment the counter: the increment sits inside the branch, so a rejected
+request never consumes quota.
+
+### Components
+
+| Artifact | Role |
+|---|---|
+| `sliding_counter.lua` | Atomic weighted evaluation over the current and previous window counters |
+| `RedisSlidingWindowCounterRateLimiter` | Algorithm with both counters stored in Redis |
+
+The script name follows ADR-0009's script organization (`sliding_counter.lua`). The Development
+Playbook calls it `sliding_window.lua`; ADRs are the higher authority.
+
+### Keys
+
+```
+dev:ratelimiter:sliding:user-101:1789992000   <- current window
+dev:ratelimiter:sliding:user-101:1789991940   <- previous window (one window earlier)
+```
+
+Built through `RedisKeyBuilder`, following the resolution already applied in Sprint 16: the
+Engineering Contract schema `environment:module:resource:identifier` outranks the five-segment
+example in the Redis design document.
+
+**Keying by window start replaces key rotation.** The Redis design describes a `current:` /
+`previous:` key pair per client, which would require renaming or resetting keys as windows roll —
+itself a multi-step operation needing coordination. Because each window owns a timestamped key, the
+previous window's counter is simply the key one window earlier, and an expired window is abandoned
+to its TTL. Same two-counter model, no rotation.
+
+### TTL
+
+```
+TTL = (2 x window duration) + 10 second safety buffer
+```
+
+Twice the window because a counter is read as the *previous* window throughout the window that
+follows its own — the Redis design states the previous window's lifetime as "current window TTL plus
+one additional window". Since each key is first current and then previous, one TTL covers both
+roles. As with Fixed Window, the expiry is set only when absent, so repeated requests never extend it.
+
+### Enabling it
+
+The existing Redis configuration block, unchanged:
+
+```yaml
+gateway:
+  rate-limit:
+    algorithm: SLIDING_WINDOW_COUNTER
+    redis:
+      enabled: true      # false (default) keeps the in-memory limiter
+```
+
+### Concurrency
+
+No mutable JVM state — no map, no lock, no atomic. Correctness rests on Redis executing
+`sliding_counter.lua` to completion without interruption.
+
+Backward clock drift needs no special handling here: because each window owns a timestamped key,
+drift selects an earlier key rather than corrupting a shared one.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=RedisSlidingWindowCounterRateLimiterTest
+.\mvnw.cmd test -Dtest=RedisSlidingWindowCounterRateLimiterIntegrationTest
+```
+
+The integration suite proves the property that distinguishes this algorithm from Fixed Window:
+after a window is fully consumed, stepping halfway into the next window admits only 5 of 10
+requests, because half the previous window still counts. A Fixed Window limiter would have granted
+a full fresh quota at that boundary. It also runs two independent limiter instances against one
+Redis, including 40 concurrent threads split across both, admitting exactly the configured quota.
+
+### Known limitations
+
+- **Failure policy is still not implemented.** Redis failures propagate as the Redis module's
+  exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
+- **Window durations below one second are not supported**, for the same reason as Fixed Window: the
+  key's window component is expressed in epoch seconds.
+- **Sliding Window Log, Token Bucket and Leaky Bucket remain in-memory** and per-instance.

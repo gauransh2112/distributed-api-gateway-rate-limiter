@@ -48,7 +48,8 @@ public class RedisStorageConfiguration {
                 stringRedisTemplate,
                 List.of(LuaScriptLoader.INCREMENT_SCRIPT,
                         LuaScriptLoader.SLIDING_COUNTER_SCRIPT,
-                        LuaScriptLoader.SLIDING_LOG_SCRIPT));
+                        LuaScriptLoader.SLIDING_LOG_SCRIPT,
+                        LuaScriptLoader.TOKEN_BUCKET_SCRIPT));
         loader.initialize();
         return loader;
     }

@@ -156,8 +156,10 @@ class LuaExecutionIntegrationTest {
     @Test
     @DisplayName("Should raise REDIS-006 for a script that is not shipped with the Gateway")
     void testUnknownScriptRaisesNotLoaded() {
+        // Deliberately a name the Gateway will never ship. Using the name of a real algorithm's
+        // script here would stop testing "unknown script" the moment that algorithm is added.
         assertThatThrownBy(() -> luaExecutor.executeLua(
-                "token_bucket.lua", Long.class, List.of(luaKey()), List.of("1")))
+                "no_such_script.lua", Long.class, List.of(luaKey()), List.of("1")))
                 .isInstanceOf(LuaScriptNotLoadedException.class)
                 .extracting(e -> ((LuaScriptNotLoadedException) e).getErrorCode())
                 .isEqualTo("REDIS-006");

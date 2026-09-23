@@ -345,8 +345,8 @@ across both instances, where exactly the configured quota is admitted.
   in epoch seconds, so sub-second windows would map adjacent windows onto the same key. The
   documented configuration surface expresses windows in seconds or minutes.
 - **Only Fixed Window is distributed** as of this sprint. Sliding Window Counter followed in
-  Sprint 17 (section 13); Sliding Window Log, Token Bucket and Leaky Bucket remain in-memory and
-  per-instance.
+  Sprint 17 (section 13), Sliding Window Log in Sprint 18 (section 14) and Token Bucket in
+  Sprint 19 (section 15); Leaky Bucket remains in-memory and per-instance.
 
 ---
 
@@ -452,8 +452,8 @@ Redis, including 40 concurrent threads split across both, admitting exactly the 
   exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
 - **Window durations below one second are not supported**, for the same reason as Fixed Window: the
   key's window component is expressed in epoch seconds.
-- **Token Bucket and Leaky Bucket remain in-memory** and per-instance. Sliding Window Log
-  followed in Sprint 18 (section 14).
+- **Leaky Bucket remains in-memory** and per-instance. Sliding Window Log followed in Sprint 18
+  (section 14) and Token Bucket in Sprint 19 (section 15).
 
 
 ---
@@ -602,4 +602,173 @@ and storing exactly that many entries.
   exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
 - **Storage scales with admitted traffic**, as described above — unlike the counter-based
   algorithms, whose footprint is constant per client.
-- **Token Bucket and Leaky Bucket remain in-memory** and per-instance.
+- **Leaky Bucket remains in-memory** and per-instance. Token Bucket followed in Sprint 19
+  (section 15).
+
+---
+
+## 15. Sprint 19 — Distributed Token Bucket
+
+The fourth Phase 6 deliverable, and the first whose state is neither a counter nor a list of
+timestamps. Token Bucket is also the algorithm the Redis design uses to explain why this project
+adopted Lua at all.
+
+### Why this algorithm needs a script
+
+The window algorithms increment something. Token Bucket computes a value:
+
+```
+elapsed = now - lastRefill
+tokens  = min(capacity, tokens + elapsed x refillRate)
+admit when tokens >= 1, then tokens = tokens - 1
+```
+
+That new value depends on elapsed time and is capped at capacity, so it **cannot be expressed as an
+INCRBY** — the arithmetic has to happen where the state lives. `REDIS_DESIGN.md` walks through the
+failure directly: two Gateways `GET` 5 tokens, both compute 4, both `SET` 4, and two requests have
+consumed one token. `token_bucket.lua` performs read, refill, consume, write and TTL refresh as one
+uninterrupted step.
+
+### Components
+
+| Artifact | Role |
+|---|---|
+| `token_bucket.lua` | Atomic read / refill / conditional-consume / write over the bucket hash |
+| `RedisTokenBucketRateLimiter` | Algorithm with the bucket stored in Redis |
+
+### Keys and state
+
+```
+dev:ratelimiter:tokenbucket:user-101     ->  Redis HASH
+                                             tokens     = "4.5"
+                                             lastRefill = "1790173361000"
+```
+
+Built through `RedisKeyBuilder`, following the resolution applied since Sprint 16: the Engineering
+Contract schema `environment:module:resource:identifier` outranks the longer forms in the Redis
+design document and the Development Playbook, which for this algorithm disagree with each other in
+four different places.
+
+A **hash**, not a string or a sorted set — the Redis design specifies it (`Hash | Token Bucket
+state`) and explicitly rejects splitting the fields across separate keys. As with the Sliding
+Window Log there is **no window component**: a bucket is continuous, not partitioned into windows.
+Because no part of the key is expressed in epoch seconds, this algorithm is not restricted to
+windows of one second or more.
+
+**Deviation — capacity is not stored.** The Redis design lists three fields: `tokens`, `capacity`
+and `lastRefill`. Capacity is **configuration**, not bucket state: it is resolved per request from
+the policy snapshot, nothing ever reads it back, and persisting it would let a stale value outlive
+a configuration change or let two differently-configured instances fight over the field. Only
+`tokens` and `lastRefill` are written. Recorded here rather than applied silently.
+
+### Fractional tokens, and why they are returned as a string
+
+Tokens are a `double`, matching the in-memory implementation — a bucket refilling at 2 tokens/sec
+holds 0.5 tokens after 250ms, and that fraction is real quota.
+
+**Redis truncates a Lua number to an integer on the way out**, including inside a returned table:
+
+```
+EVAL "return 3.7"           ->  (integer) 3        <- 0.7 tokens destroyed
+EVAL "return {1, 2.9}"      ->  1) 1   2) 2        <- truncation applies inside tables
+EVAL "return tostring(3.7)" ->  "3.7"              <- preserved as a bulk string
+```
+
+Returning the count as a number would silently discard up to a whole token on **every** call, and
+because the truncated value is written back, the loss compounds. The script therefore returns the
+exact count as a **string**, which Java parses with `Double.parseDouble`. The whole-number fields
+(`allowed`, `remaining`, `retryAfterMillis`) return as ordinary integers. This is the Token Bucket
+analogue of Sprint 18's member-collision defect: a representation mismatch that sequential tests
+would not reveal.
+
+`remaining` is reported to clients as whole tokens, but the **reset time is computed from the exact
+fractional count**, so the advertised refill time is not rounded.
+
+### State is written on rejection
+
+Unlike the Sliding Window Log — where a rejected request must not enter the log — a rejected Token
+Bucket request **does** write state: it materialises the tokens accrued up to now and advances
+`lastRefill`. This matches the in-memory implementation. Withholding the write would re-accrue the
+same interval on the following request, effectively refilling twice.
+
+### TTL
+
+```
+TTL = 1 hour, refreshed on every evaluation
+```
+
+The Redis design specifies one hour with refresh-on-access, a different rule from the window
+algorithms' `window + buffer`: a bucket has no window to expire alongside, so its lifetime is
+measured from the last request. An active client's bucket persists; an abandoned one disappears on
+its own.
+
+**Deviation — refreshed on every evaluation, not only on successful ones.** The design says "every
+successful request refreshes the TTL". Since a rejected request also writes state, a bucket that
+expired *while its client was being throttled* would be recreated full on the next request, handing
+back the quota just spent. The TTL is refreshed whenever state is written, which is every
+evaluation.
+
+### Time source
+
+Timestamps come from the injected Java `Clock`, consistent with the three distributed limiters
+already shipped and with the in-memory Token Bucket.
+
+**This algorithm is more exposed to clock skew than the window algorithms, and that is worth stating
+plainly.** For Fixed Window and Sliding Window Counter a skewed clock selects a *different key* —
+bounded, self-correcting damage. Here the timestamp feeds the refill arithmetic directly: an
+instance whose clock runs fast writes a `lastRefill` in the future, and the other instances then
+compute no elapsed time until the real clock catches up. The script clamps negative elapsed time to
+zero, so a skewed instance can never *drain* a shared bucket, but no client-side clock can give the
+cluster a single shared notion of time. Deployments are expected to keep instances NTP-synchronised.
+
+Redis's own `TIME` command would remove the skew entirely and remains available as a future change.
+It was not adopted here because it would forfeit the deterministic clock the whole test suite is
+built on, and because clock-skew hardening is properly its own deliverable.
+
+### Enabling it
+
+The existing Redis configuration block, unchanged:
+
+```yaml
+gateway:
+  rate-limit:
+    algorithm: TOKEN_BUCKET
+    redis:
+      enabled: true      # false (default) keeps the in-memory limiter
+```
+
+No new configuration was added. Capacity comes from `defaultCapacity` or the policy; the refill rate
+from `refillRate` (tokens per second) or, when a policy carries a window, from
+`capacity / windowSeconds`. The one-hour TTL is a constant rather than a property, because no
+configuration key for it is documented.
+
+### Concurrency
+
+No mutable JVM state — no map, no lock, no atomic. Correctness rests on Redis executing
+`token_bucket.lua` to completion without interruption.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=RedisTokenBucketRateLimiterTest
+.\mvnw.cmd test -Dtest=RedisTokenBucketRateLimiterIntegrationTest
+```
+
+The integration suite proves the properties specific to this algorithm: a new bucket starts full so
+an unseen client may burst to capacity; tokens refill at exactly the configured rate; a half-token
+refill is **stored as 0.5 rather than truncated to 0**; a rejected request still advances the
+bucket; tokens cap at capacity after an hour of idling; and an expired bucket behaves like an unseen
+client. It also runs two independent limiter instances against one Redis, including 40 concurrent
+threads split across both, admitting exactly the configured quota — and then asserts the **stored
+token balance** independently, so a write lost under contention cannot hide behind the counters.
+
+### Known limitations
+
+- **Failure policy is still not implemented.** Redis failures propagate as the Redis module's
+  exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
+- **Clock skew between Gateway instances affects refill accuracy**, as described above. Mitigated,
+  not eliminated.
+- **An invalid configuration throws rather than rejects.** A non-positive capacity or refill rate
+  raises `IllegalArgumentException` before Redis is contacted, matching the in-memory Token Bucket
+  and differing deliberately from Fixed Window, which rejects such requests.
+- **Leaky Bucket remains in-memory** and per-instance.

@@ -346,7 +346,8 @@ across both instances, where exactly the configured quota is admitted.
   documented configuration surface expresses windows in seconds or minutes.
 - **Only Fixed Window is distributed** as of this sprint. Sliding Window Counter followed in
   Sprint 17 (section 13), Sliding Window Log in Sprint 18 (section 14) and Token Bucket in
-  Sprint 19 (section 15); Leaky Bucket remains in-memory and per-instance.
+  Sprint 19 (section 15) and Leaky Bucket in Sprint 20 (section 16). Every algorithm is now
+  distributed.
 
 ---
 
@@ -452,8 +453,8 @@ Redis, including 40 concurrent threads split across both, admitting exactly the 
   exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
 - **Window durations below one second are not supported**, for the same reason as Fixed Window: the
   key's window component is expressed in epoch seconds.
-- **Leaky Bucket remains in-memory** and per-instance. Sliding Window Log followed in Sprint 18
-  (section 14) and Token Bucket in Sprint 19 (section 15).
+- Sliding Window Log followed in Sprint 18 (section 14), Token Bucket in Sprint 19
+  (section 15) and Leaky Bucket in Sprint 20 (section 16). Every algorithm is now distributed.
 
 
 ---
@@ -602,8 +603,8 @@ and storing exactly that many entries.
   exceptions; fail-open versus fail-closed remains a separate Phase 6 deliverable.
 - **Storage scales with admitted traffic**, as described above — unlike the counter-based
   algorithms, whose footprint is constant per client.
-- **Leaky Bucket remains in-memory** and per-instance. Token Bucket followed in Sprint 19
-  (section 15).
+- Token Bucket followed in Sprint 19 (section 15) and Leaky Bucket in Sprint 20
+  (section 16). Every algorithm is now distributed.
 
 ---
 
@@ -771,4 +772,199 @@ token balance** independently, so a write lost under contention cannot hide behi
 - **An invalid configuration throws rather than rejects.** A non-positive capacity or refill rate
   raises `IllegalArgumentException` before Redis is contacted, matching the in-memory Token Bucket
   and differing deliberately from Fixed Window, which rejects such requests.
-- **Leaky Bucket remains in-memory** and per-instance.
+- **Leaky Bucket followed in Sprint 20** (section 16), completing the algorithms.
+
+---
+
+## 16. Sprint 20 — Distributed Leaky Bucket
+
+The fifth Phase 6 deliverable and the **last rate limiting algorithm**. After this sprint every
+algorithm the Gateway offers runs distributed; only the Failure Policy remains.
+
+### ⚠️ Documented deviation — the design specifies a queue, the Gateway implements a meter
+
+This is the largest design-versus-implementation gap encountered in Phase 6, and it is recorded
+here rather than resolved by editing the design document.
+
+**What `REDIS_DESIGN.md` specifies:**
+
+| Aspect | Section | Specifies |
+|---|---|---|
+| Data structure | Data Structures matrix | `List \| Leaky Bucket queue` |
+| Rationale | "Why Lists?" | *"Leaky Bucket behaves like Queue → FIFO. Redis Lists naturally support FIFO operations."* |
+| Operations | Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN` |
+| Stores | Leaky Bucket Keys | *"Queue State"* and *"Last Leak Timestamp"* |
+
+**What the Gateway implements.** `LeakyBucketRateLimiter` is not a queue. Its entire state is:
+
+```java
+public record LeakyBucket(double waterLevel, long lastLeakTimestampMillis) {}
+```
+
+A **meter** — one fractional water level that rises by one unit per admitted request and drains
+continuously. No request is ever stored.
+
+**Why the meter was kept, and the List model not implemented:**
+
+1. **A List cannot hold the state the same design requires.** The design says the key stores queue
+   state *and* a last-leak timestamp. A Redis List is homogeneous — there is nowhere to put the
+   timestamp. The specification contradicts itself within one section. Token Bucket needed a hash
+   for exactly this reason.
+2. **It would change observable behaviour.** A queue stores discrete entries and drains in whole
+   units; the meter drains fractionally. Boundary decisions would differ from the in-memory
+   limiter, and since Sprint 18 the established rule has been that **the in-memory implementation
+   is the behavioural reference the distributed version must match**. Two limiters behind one
+   configuration flag must not disagree.
+
+**The state is therefore a hash of `level` and `lastLeak`.** `REDIS_DESIGN.md` has deliberately
+**not** been modified: it remains an authoritative document describing an intended design, and this
+section records where the implementation departs from it and why. Reconciling the two is a
+documentation decision for the project owner, not something to be resolved inside an
+implementation sprint.
+
+### Why this algorithm needs a script
+
+Like Token Bucket, the new level depends on elapsed time and is clamped, so it cannot be expressed
+as an `INCRBY` — the arithmetic has to happen where the state lives:
+
+```
+elapsed = now - lastLeak
+level   = max(0, level - elapsed x leakRate)
+admit when level + 1 <= capacity, then level = level + 1
+```
+
+Issued as separate commands, two instances would each read the same level, each find room for one
+more unit, and each write — admitting past capacity. `leaky_bucket.lua` performs drain, admission
+test, write and TTL refresh as one uninterrupted step.
+
+### Components
+
+| Artifact | Role |
+|---|---|
+| `leaky_bucket.lua` | Atomic drain / admission-test / write over the bucket hash |
+| `RedisLeakyBucketRateLimiter` | Algorithm with the bucket stored in Redis |
+
+The script name is **not documented anywhere** — ADR-0009's script listing stops at
+`sliding_log.lua` and never names one for this algorithm. `leaky_bucket.lua` was chosen by direct
+analogy with `token_bucket.lua`. ADR-0009 has not been amended to add it; that remains open.
+
+### Keys and state
+
+```
+dev:ratelimiter:leaky:user-101     ->  Redis HASH
+                                        level    = "4.5"
+                                        lastLeak = "1790173361000"
+```
+
+Built through `RedisKeyBuilder`: the Engineering Contract schema outranks the design document's
+`gateway:ratelimit:leaky:<clientId>`, as in every sprint since 16. No window component. Capacity is
+not stored, for the same reason as Token Bucket — it is configuration, not bucket state.
+
+### Leaky Bucket versus Token Bucket
+
+The two share a state shape and almost nothing else. These differences are all preserved from the
+in-memory implementations:
+
+| | Leaky Bucket | Token Bucket |
+|---|---|---|
+| Initial state | **Empty** — no credit | **Full** — full burst available |
+| Direction | Level **rises** on admit, drains over time | Tokens **fall** on admit, refill over time |
+| Admission test | `level + 1 <= capacity` | `tokens >= 1` |
+| **Burst** | **None** — constant outflow | Up to capacity |
+| Idle client | Gains nothing beyond an empty bucket | Accumulates tokens up to capacity |
+| `remaining` | `capacity - ceil(level)` — **rounds up** | `(long) tokens` — **truncates** |
+| `retryAfter` | **Floored at 1ms** | No floor |
+| **Clock regression** | `lastLeak` **preserved** — explicit invariant | `lastRefill` follows the clock |
+
+The rounding differences are not cosmetic. Leaky Bucket rounds the level **up** when reporting
+remaining capacity, so a partially used unit still occupies its slot — the conservative choice for
+an algorithm whose purpose is a smooth outflow.
+
+### Clock regression
+
+The in-memory implementation states the invariant directly: *"lastLeakTimestampMillis must NEVER
+move backwards."* The script preserves the stored timestamp when the clock runs backwards, rather
+than following it as Token Bucket does. The reason is asymmetry: rewinding `lastLeak` would cause
+the same interval to be drained **twice** on a later request, handing back capacity that was
+legitimately used. Preserving it means a skewed instance can neither drain the shared bucket early
+nor corrupt it for the others.
+
+Because the stored timestamp may be ahead of the observed clock, the reset time reported to clients
+is measured from **the timestamp actually stored**, not from `now`.
+
+### Fractional levels are returned as a string
+
+Identical constraint to Sprint 19: Redis truncates a Lua number to an integer on the way out,
+including inside a returned table. The level is returned as a string and parsed with
+`Double.parseDouble`; returning it as a number would silently discard up to a whole unit of water
+on every call, and the loss would compound as the truncated value is written back.
+
+Everything the client is told — `remaining`, `retryAfter`, `resetTime` — is derived on the Java
+side from the exact level, so the in-memory rounding rules (`ceil` for remaining, a 1ms floor on
+retryAfter) are mirrored where they can be read and tested.
+
+### TTL
+
+```
+TTL = 1 hour, refreshed on every evaluation
+```
+
+As documented, and with the same deviation as Token Bucket: refreshed on every evaluation rather
+than only on admitted requests, because a bucket that expired while its client was being throttled
+would be recreated **empty** and hand back the capacity just consumed.
+
+### Enabling it
+
+```yaml
+gateway:
+  rate-limit:
+    algorithm: LEAKY_BUCKET
+    redis:
+      enabled: true      # false (default) keeps the in-memory limiter
+```
+
+No new configuration. Note that there is **no separate leak-rate property**: `refillRate` serves
+both bucket algorithms, and a policy window overrides it with `capacity / windowSeconds`.
+
+### Concurrency
+
+No mutable JVM state — no map, no lock, no atomic. Correctness rests on Redis executing
+`leaky_bucket.lua` to completion without interruption.
+
+### Verification
+
+```bash
+.\mvnw.cmd test -Dtest=RedisLeakyBucketRateLimiterTest
+.\mvnw.cmd test -Dtest=RedisLeakyBucketRateLimiterIntegrationTest
+```
+
+The integration suite proves the properties specific to this algorithm: the bucket **starts empty**;
+water drains at exactly the configured rate; a half-unit drain is **stored as 4.5 rather than
+truncated**; a rejected request still materialises the drained level; **an hour of idling grants no
+burst** — the property that most sharply separates this algorithm from Token Bucket; and a backward
+clock **does not rewind** the stored timestamp. It also runs two independent limiter instances
+against one Redis, including 40 concurrent threads split across both, admitting exactly the
+configured capacity — then asserts the **stored water level** independently, so a write lost under
+contention cannot hide behind the counters.
+
+### Known limitations
+
+- **Failure policy is still not implemented.** Redis failures propagate as the Redis module's
+  exceptions; fail-open versus fail-closed remains the final Phase 6 deliverable.
+- **The state model deviates from `REDIS_DESIGN.md`**, as detailed at the top of this section. The
+  design document has deliberately not been edited.
+- **`leaky_bucket.lua` is not named in ADR-0009's script listing.** The name was inferred; amending
+  the ADR remains open.
+- **Clock skew between Gateway instances affects drain accuracy**, as with Token Bucket. The
+  never-move-backwards invariant bounds the damage but does not eliminate it.
+- **An invalid configuration throws rather than rejects**, matching the in-memory Leaky Bucket.
+
+### Phase 6 status after this sprint
+
+```
+Fixed Window            done (section 12)      Token Bucket     done (section 15)
+Sliding Window Counter  done (section 13)      Leaky Bucket     done (section 16)
+Sliding Window Log      done (section 14)      Failure Policy   remaining
+```
+
+Every rate limiting algorithm now runs distributed.

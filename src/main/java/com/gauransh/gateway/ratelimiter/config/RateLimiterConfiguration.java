@@ -4,6 +4,7 @@ import com.gauransh.gateway.ratelimiter.RateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.FixedWindowRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.fixedwindow.RedisFixedWindowRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.leakybucket.LeakyBucketRateLimiter;
+import com.gauransh.gateway.ratelimiter.algorithm.leakybucket.RedisLeakyBucketRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.RedisSlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowcounter.SlidingWindowCounterRateLimiter;
 import com.gauransh.gateway.ratelimiter.algorithm.slidingwindowlog.RedisSlidingWindowLogRateLimiter;
@@ -79,6 +80,11 @@ public class RateLimiterConfiguration {
             return new TokenBucketRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         if (properties.getAlgorithm() == RateLimiterAlgorithm.LEAKY_BUCKET) {
+            if (properties.getRedis().isEnabled()) {
+                requireRedisBeans(redisService, redisKeyBuilder);
+                return new RedisLeakyBucketRateLimiter(
+                        properties, keyResolver, policyResolver, clock, redisService, redisKeyBuilder);
+            }
             return new LeakyBucketRateLimiter(properties, keyResolver, policyResolver, clock);
         }
         return new NoOpRateLimiter();

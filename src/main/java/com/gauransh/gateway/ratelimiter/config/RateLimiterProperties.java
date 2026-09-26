@@ -45,6 +45,15 @@ public class RateLimiterProperties {
     private double refillRate = 10.0;
 
     /**
+     * Behaviour applied when Redis is unavailable during rate limit evaluation.
+     *
+     * <p>Defaults to {@link RateLimitFailurePolicy#FAIL_CLOSED} per ADR-0016: a protection boundary
+     * must not silently disappear when the shared enforcement state becomes unavailable. Set
+     * {@code gateway.rate-limit.failure-policy=FAIL_OPEN} to prioritise availability instead.</p>
+     */
+    private RateLimitFailurePolicy failurePolicy = RateLimitFailurePolicy.FAIL_CLOSED;
+
+    /**
      * Redis configuration block for distributed rate limiting.
      */
     private RedisProperties redis = new RedisProperties();
@@ -95,6 +104,14 @@ public class RateLimiterProperties {
 
     public void setRefillRate(double refillRate) {
         this.refillRate = refillRate;
+    }
+
+    public RateLimitFailurePolicy getFailurePolicy() {
+        return failurePolicy;
+    }
+
+    public void setFailurePolicy(RateLimitFailurePolicy failurePolicy) {
+        this.failurePolicy = failurePolicy;
     }
 
     public RedisProperties getRedis() {

@@ -1,5 +1,6 @@
 package com.gauransh.gateway.shared.exception;
 
+import com.gauransh.gateway.ratelimiter.exception.RateLimitBackendUnavailableException;
 import com.gauransh.gateway.ratelimiter.exception.RateLimitExceededException;
 import com.gauransh.gateway.shared.model.ApiResponse;
 import org.slf4j.Logger;
@@ -38,6 +39,19 @@ public class GlobalExceptionHandler {
 
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+                .body(ApiResponse.error(apiError, requestId));
+    }
+
+    @ExceptionHandler(RateLimitBackendUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleRateLimitBackendUnavailableException(
+            RateLimitBackendUnavailableException ex) {
+        String requestId = UUID.randomUUID().toString();
+        // The cause is logged by the filter that applied the policy; this records the outcome only,
+        // and the response body carries nothing about the storage layer.
+        log.error("Rate limiting unavailable, request refused [requestId={}, code={}]", requestId, ex.getErrorCode());
+
+        ApiResponse.ApiError apiError = ApiResponse.ApiError.of(ex.getErrorCode(), ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.error(apiError, requestId));
     }
 

@@ -200,6 +200,7 @@ Minor code refactoring does not require an ADR.
 | ADR-0013 | Testing Strategy | Planned |
 | ADR-0014 | Package-by-Feature | Planned |
 | ADR-0015 | Observability Strategy | Planned |
+| ADR-0016 | Rate Limiter Failure Policy | Accepted |
 
 ---
 
@@ -8506,3 +8507,344 @@ This decision is successful if
 The Distributed API Gateway will adopt a **three-pillar observability strategy** consisting of **Structured Logging, Metrics, and Health Checks**.
 
 This approach provides production-grade operational visibility, improves debugging, enables performance analysis, and establishes a strong foundation for future integrations with Prometheus, Grafana, and distributed tracing systems while keeping Version 1 focused and maintainable.
+
+---
+
+# ADR-0016 — Failure Policy for Redis Unavailability
+
+Status: Accepted
+
+ADR ID: ADR-0016
+
+Version: 1.0
+
+Date: YYYY-MM-DD
+
+Decision Makers
+
+- Repository Owner
+- Engineering Team
+
+---
+
+# Context
+
+Since ADR-0008 the Gateway keeps all rate limiting state in Redis, and every Gateway instance
+consults that shared state on every request. Five algorithms — Fixed Window, Sliding Window
+Counter, Sliding Window Log, Token Bucket and Leaky Bucket — now run distributed.
+
+That design has a consequence which was deliberately deferred through the whole of Phase 6: Redis
+becomes a hard dependency of the request path. When Redis is unreachable, the Gateway cannot know
+how much quota a client has consumed. It must nevertheless answer the request.
+
+Until this decision, the Gateway had no defined behaviour for that case. A Redis failure produced
+an unhandled exception and a generic 500 response, which matched neither of the two behaviours the
+Redis design document describes and contradicted the Error Catalog, which specifies 503 for Redis
+connection and timeout failures.
+
+---
+
+# Problem Statement
+
+When Redis is unavailable at request time, should the Gateway
+
+- forward the request without enforcing the limit, or
+- refuse the request?
+
+Both answers are defensible, and the correct one depends on what the operator is protecting. The
+decision therefore has to be a configurable policy rather than a fixed behaviour, and it has to
+have a default.
+
+---
+
+# Decision
+
+The Gateway adopts a configurable **Failure Policy** with two values, applied when a Redis failure
+occurs during rate limit evaluation.
+
+```text
+                         Redis call
+                             │
+                     ┌───────┴───────┐
+                     │               │
+                  success       RedisException
+                     │               │
+                     ▼               ▼
+                normal path    Failure Policy
+                                 /          \
+                          FAIL_OPEN       FAIL_CLOSED
+                              │                │
+                              ▼                ▼
+                        continue chain      HTTP 503
+```
+
+**FAIL_OPEN** — availability-oriented. The request proceeds unlimited. Rate limiting is temporarily
+not enforced. Appropriate where serving traffic matters more than enforcing the boundary, such as
+internal services and development environments.
+
+**FAIL_CLOSED** — enforcement-oriented. The request is refused with 503 Service Unavailable.
+Traffic is shed while the enforcement state is unavailable. Appropriate where the limit protects
+something that must not be exposed to unlimited traffic.
+
+Neither policy is universally correct. They express different priorities, and the choice belongs to
+whoever operates the deployment.
+
+---
+
+# Default Policy
+
+The default is **FAIL_CLOSED**.
+
+The rate limiter exists to enforce a protection boundary. If the default were FAIL_OPEN, then at
+the exact moment the shared enforcement state became unavailable the system would silently move
+from
+
+```text
+rate limiting enforced
+```
+
+to
+
+```text
+unlimited traffic
+```
+
+without any configuration change and without any operator decision. A protection boundary that
+disappears on infrastructure failure is not a protection boundary.
+
+FAIL_CLOSED makes the failure mode deterministic and conservative: the Gateway refuses rather than
+silently stops protecting. An operator who prefers availability may choose FAIL_OPEN explicitly,
+and that choice is then visible in configuration rather than implicit in a default.
+
+This is a deliberate trade of availability for enforcement in the default case only.
+
+---
+
+# Policy Location
+
+The policy is applied in **`RateLimitFilter`**, the single point through which every rate-limited
+request passes.
+
+The Redis design document states the principle directly: Redis never decides whether a request
+should continue; the Gateway applies the configured failure policy. Whether a request proceeds is a
+pipeline decision, not an algorithm decision.
+
+Placing it in the filter means the five distributed algorithms are unchanged and carry no failure
+handling of their own. A policy implemented inside each algorithm would be the same logic copied
+five times, and would have to be copied again for every algorithm added later.
+
+---
+
+# Exception Boundary
+
+The filter catches **`RedisException` only** — the Redis module's own hierarchy, covering storage
+failures, Lua execution failures and script-loading failures.
+
+It must not catch `RuntimeException`, `Exception` or `Throwable`.
+
+This boundary is the substance of the decision, not a detail of it. A Redis outage is an
+infrastructure failure the policy exists to absorb. These are not:
+
+```text
+IllegalArgumentException  -> invalid configuration (non-positive capacity or rate)
+IllegalStateException     -> integrity failure (unusable script result)
+```
+
+Both indicate that the Gateway is misconfigured or that an invariant has broken. Absorbing them
+into the failure policy would, under FAIL_OPEN, silently disable rate limiting because of a
+configuration typo — a failure that would look identical to a Redis outage in the logs while having
+an entirely different cause and remedy. They continue to propagate.
+
+---
+
+# Recovery Semantics
+
+Recovery is automatic and requires no application restart.
+
+```text
+Redis healthy -> Redis failure -> policy applied -> Redis restored -> next request limits normally
+```
+
+The policy is evaluated per request against the outcome of that request's Redis call. No failure
+state is retained between requests.
+
+This ADR deliberately introduces **no circuit breaker and no failure latch**. A latch would keep
+applying the policy after Redis had recovered, turning a transient failure into a sustained outage
+and requiring its own recovery logic. Circuit breaking may be reconsidered later if measurement
+shows that per-request failures are themselves costly; it is not adopted on speculation.
+
+Consistent with the Redis design, there is **no retry inside request processing**. Retrying would
+add latency to a request that is already failing and could duplicate non-idempotent operations.
+Connection pools may retry outside request execution.
+
+---
+
+# What This ADR Does Not Decide
+
+**Startup and readiness behaviour is out of scope.**
+
+SEQ-014 describes a Gateway that does not enter READY state when Redis is unavailable at startup.
+ADR-0008 states that Redis failures should never crash the application and that the Gateway should
+report degraded health.
+
+These are frequently read as contradictory. They largely are not: SEQ-014 governs **startup**, while
+ADR-0008's failure handling governs **runtime**. A Gateway may reasonably refuse to start without
+Redis and still survive Redis disappearing later.
+
+A narrower ambiguity does remain — SEQ-014 places the failure policy inside the startup chain
+immediately before startup failure, which leaves unclear whether FAIL_OPEN should permit startup
+without Redis. That question is **not decided here** and remains open. This ADR governs runtime
+request handling only.
+
+Also out of scope: health-state redesign, and the Observability phase's metrics and monitoring
+surface beyond the failure signal this policy itself requires.
+
+---
+
+# Alternatives Considered
+
+## Fixed behaviour, no configuration
+
+Rejected. The Redis design document and the Engineering Contracts both require the failure
+behaviour to be configurable, and the right answer genuinely differs between deployments.
+
+## Policy inside each rate limiting algorithm
+
+Rejected. The same logic five times, duplicated again for each future algorithm, with five
+opportunities to diverge. Failure handling is not algorithm-specific.
+
+## A decorating RateLimiter that wraps the delegate
+
+A reasonable design, and cleaner in separation terms. Rejected as an unnecessary abstraction: it
+adds a type and a wiring branch to achieve what one guarded call in the existing choke point
+achieves, and the project's engineering rules discourage abstractions that carry no additional
+capability.
+
+## Local in-memory fallback while Redis is down
+
+Rejected. A per-instance fallback would silently reintroduce exactly the defect distributed rate
+limiting exists to remove — each instance enforcing its own quota — while appearing to work. It
+would also produce counters that cannot be reconciled with Redis on recovery.
+
+## Circuit breaker
+
+Deferred, not rejected. See Recovery Semantics.
+
+---
+
+# Decision Drivers
+
+- A protection boundary must not silently disappear on infrastructure failure.
+- Failure behaviour must be configurable without code changes.
+- Failure handling must not be duplicated across algorithms.
+- Infrastructure failures and programming errors must remain distinguishable.
+- Recovery must be automatic.
+- The request path must not gain retries or latency on the failure path.
+
+---
+
+# Configuration
+
+```properties
+gateway.rate-limit.failure-policy=FAIL_CLOSED
+```
+
+Bound within the existing `gateway.rate-limit` configuration namespace.
+
+The Redis design document writes this key as `gateway.rateLimiter.failurePolicy`. That form is not
+adopted, because it would create a second configuration root for one subsystem alongside the
+established `gateway.rate-limit` prefix used by every other rate limiting property. The deviation
+is recorded here and in the Configuration Reference.
+
+---
+
+# Risks
+
+**FAIL_CLOSED converts a Redis outage into a Gateway outage.** This is the intended behaviour, but
+it means Redis availability directly bounds Gateway availability by default. Deployments that
+cannot accept that must set FAIL_OPEN explicitly and accept unenforced limits during failures.
+
+**FAIL_OPEN leaves backends unprotected for the duration of the failure.** Where the limit protects
+a fragile downstream service, a Redis outage could be followed by a downstream outage.
+
+**Neither policy protects against a slow Redis**, only a failing one. Command timeouts surface as
+Redis failures and are handled, but a Redis responding slowly within its timeout still adds latency
+to every request. That is a capacity concern, not a failure-policy concern.
+
+---
+
+# Implementation Impact
+
+- One enum, one configuration property, one guarded call in `RateLimitFilter`.
+- The five distributed algorithms are not modified.
+- Redis failures produce 503 under the default policy, replacing the previous unhandled 500.
+
+---
+
+# Known Technical Debt
+
+The Redis exception hierarchy does not carry the Error Catalog's codes. `RedisStorageException`
+reports `REDIS_STORAGE_ERROR`, while the catalog defines `REDIS-001` through `REDIS-015` with
+distinct HTTP statuses — notably 503 for connection and timeout failures but 500 for authentication
+failure.
+
+The runtime policy therefore treats every `RedisException` uniformly. Distinguishing an
+authentication failure from a connection failure at request time is not possible until the
+hierarchy carries catalog codes, and that alignment is separate work. It is recorded here so the
+uniform treatment is understood as a known limitation rather than an oversight.
+
+---
+
+# Related Documents
+
+- REDIS_DESIGN.md — Failure Handling, Primary Failure Policy, Failure Scenarios A–E
+- Error_catalog.md — REDIS-001 through REDIS-015
+- Engineering_contracts.md — failure behaviour must be configurable
+- Sequence_diagram.md — Redis Unavailable, SEQ-014 Gateway Startup
+- Configuration_reference_overview.md — Rate Limiting Configuration
+- REDIS_SETUP_GUIDE.md — sections 7 and 17
+
+---
+
+# Related ADRs
+
+- ADR-0007 — Strategy Pattern for Rate Limiting Algorithms
+- ADR-0008 — Redis as the Distributed State Store
+- ADR-0009 — Lua Scripts for Atomic Redis Operations
+- ADR-0010 — Stateless Gateway Architecture
+- ADR-0015 — Observability Strategy
+
+---
+
+# Success Criteria
+
+- The policy is configurable and defaults to FAIL_CLOSED.
+- FAIL_OPEN forwards the request; FAIL_CLOSED returns 503.
+- Behaviour is identical across all five distributed algorithms, which remain unmodified.
+- Programming and configuration errors still propagate.
+- Rate limiting resumes automatically when Redis recovers, with no restart.
+- No Redis internals are exposed to clients.
+
+---
+
+# Interview Questions
+
+- What is the difference between failing open and failing closed?
+- Why is failing closed the safer default for a rate limiter, and when would you override it?
+- Why catch only the Redis exception hierarchy rather than all runtime exceptions?
+- Why is the policy in the filter rather than in each algorithm?
+- Why is there no circuit breaker or retry in the request path?
+- Why is a local in-memory fallback the wrong answer here?
+
+---
+
+# Final Decision
+
+**Accepted**
+
+The Gateway applies a configurable Failure Policy — FAIL_OPEN or FAIL_CLOSED — to runtime Redis
+failures during rate limit evaluation, centralised in `RateLimitFilter`, defaulting to
+**FAIL_CLOSED**, catching only the Redis exception hierarchy, and recovering automatically without
+restart, circuit breaker, retry, or local fallback state.
+
+Startup and readiness behaviour is not decided by this ADR.

@@ -1672,6 +1672,51 @@ Evaluation order must remain deterministic.
 
 ---
 
+# Failure Policy Configuration
+
+Failure policy configuration determines how the gateway responds when the distributed rate limiting
+state is unavailable at request time.
+
+Property
+
+```properties
+gateway.rate-limit.failure-policy
+```
+
+Permitted values
+
+| Value | Behavior | Orientation |
+|-------|----------|-------------|
+| `FAIL_OPEN` | The request proceeds without rate limiting | Availability-oriented |
+| `FAIL_CLOSED` | The request is refused with 503 Service Unavailable | Enforcement-oriented |
+
+Default
+
+```properties
+gateway.rate-limit.failure-policy=FAIL_CLOSED
+```
+
+The default is enforcement-oriented so that a protection boundary does not silently disappear when
+the shared enforcement state becomes unavailable. `FAIL_OPEN` remains a valid explicit choice where
+availability is prioritized over enforcement. Neither value is universally correct; the choice
+belongs to the deployment.
+
+The policy applies to **runtime** failures of the distributed state store during rate limit
+evaluation. It does not govern startup or readiness behavior, which remains a separate lifecycle
+concern.
+
+The policy applies uniformly to every rate limiting algorithm. Configuration validation rejects any
+value outside the permitted set.
+
+## Naming deviation
+
+The Redis Design document writes this property as `gateway.rateLimiter.failurePolicy`. That form is
+**not** used. All rate limiting configuration binds under the established `gateway.rate-limit`
+namespace, and adopting the alternative spelling would introduce a second configuration root for a
+single subsystem. The deviation is recorded here and in ADR-0016.
+
+---
+
 # Validation Rules
 
 Rate Limiter configuration shall be validated for:

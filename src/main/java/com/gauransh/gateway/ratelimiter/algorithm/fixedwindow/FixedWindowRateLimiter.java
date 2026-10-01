@@ -10,7 +10,6 @@ import com.gauransh.gateway.ratelimiter.resolver.DefaultRateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -25,7 +24,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * Client request counts are tracked per partition key using an in-memory {@link ConcurrentHashMap}.
  * Window transitions and counter increments are executed atomically via bucket-level map synchronization.</p>
  */
-@Component("fixedWindowRateLimiter")
 public class FixedWindowRateLimiter implements RateLimiter {
 
     private final RateLimiterProperties properties;

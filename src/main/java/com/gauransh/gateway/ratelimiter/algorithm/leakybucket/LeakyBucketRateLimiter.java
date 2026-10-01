@@ -10,7 +10,6 @@ import com.gauransh.gateway.ratelimiter.resolver.DefaultRateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -32,7 +31,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * evaluation, water level increment, and state updating occur atomically inside
  * {@link ConcurrentHashMap#compute(Object, java.util.function.BiFunction)} per client key.</p>
  */
-@Component("leakyBucketRateLimiter")
 public class LeakyBucketRateLimiter implements RateLimiter {
 
     private final RateLimiterProperties properties;

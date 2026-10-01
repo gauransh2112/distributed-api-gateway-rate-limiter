@@ -31,6 +31,12 @@ management:
       show-details: always
 
 logging:
+  # The Gateway's identity appears in every log line, so output from a cluster can be attributed to
+  # the instance that produced it. Identity is supplied by the environment (Gateway Identity, per
+  # the Configuration Reference) and defaults to a local value, so a single-instance run is
+  # unaffected. No application code reads it: one image serves every node.
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [${GATEWAY_INSTANCE_ID:gateway-local}] [%t] %-40.40logger{39} : %m%n"
   level:
     root: INFO
     com.gauransh.gateway: INFO

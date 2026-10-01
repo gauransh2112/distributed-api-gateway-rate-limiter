@@ -849,6 +849,48 @@ Burst Capacity
 
 ---
 
+## Operational Endpoints — Rate Limited: No
+
+Operational health, readiness and liveness endpoints are **not** rate limited.
+
+Rate limiting protects the Gateway and downstream services by evaluating requests **before request
+forwarding**. Operational endpoints are terminated by the Gateway itself and are never forwarded to
+an upstream, so they fall outside that path. They also must remain answerable precisely when the
+Gateway is unhealthy, which is when their answer matters most.
+
+Endpoints currently implemented and exposed by the application:
+
+| Endpoint | Method | Rate Limited | Purpose |
+|---|---|---|---|
+| `/health` | GET | **No** | Readiness — should this node receive traffic |
+| `/ready` | GET | **No** | Readiness probe |
+| `/actuator/health` | GET | **No** | Dependency health, including Redis (ADR-0015) |
+
+This designation applies **only** to these explicitly listed operational endpoints. It is not a
+general exemption for public endpoints: `/api/v1/gateway/health` is documented as `Public` and is
+still subject to rate limiting as a forwarded-path endpoint if and when it is implemented.
+
+**Not currently implemented**, and therefore deliberately not granted this treatment:
+
+- `/live` — appears in the Development Playbook's Phase 6 health-check strategy but is not exposed
+  by the application.
+- `/api/v1/gateway/health` — appears in the API overview table above but is not exposed by the
+  application; the implemented readiness endpoint is `/health`.
+
+Neither is exempted on the strength of documentation alone. The designation follows implementation.
+
+### Interaction with the Redis failure policy
+
+A rate-limited request whose Redis evaluation fails follows the configured failure policy
+(ADR-0016): under `FAIL_CLOSED` it is refused with `503`. Operational endpoints are not rate
+limited, so no failure policy applies to them. Instead they execute their own health logic and
+report dependency state through the documented `UP` / `DEGRADED` / `DOWN` model.
+
+This is what allows the Gateway to "report degraded health" on Redis unavailability as ADR-0008
+requires: the health request reaches the health subsystem rather than being refused ahead of it.
+
+---
+
 # Performance Targets
 
 Document expected latency.

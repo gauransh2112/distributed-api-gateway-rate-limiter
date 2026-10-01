@@ -2541,6 +2541,13 @@ The Rate Limiter Package is responsible for enforcing traffic control policies a
 
 It protects the gateway and downstream services by evaluating every request against configured rate limiting policies before request forwarding.
 
+"Before request forwarding" defines the scope: rate limiting applies to requests travelling the
+forwarding path toward an upstream. Operational health, readiness and liveness endpoints are
+terminated by the gateway itself and are never forwarded, so they fall outside this scope and are
+not rate limited. The applicable endpoints are listed in the API Specification under "Operational
+Endpoints — Rate Limited: No". This is not a general exemption for unauthenticated endpoints: a
+public endpoint on the forwarding path remains rate limited.
+
 This document defines:
 
 - Package responsibilities

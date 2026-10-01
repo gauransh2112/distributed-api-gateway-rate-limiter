@@ -10,7 +10,6 @@ import com.gauransh.gateway.ratelimiter.resolver.DefaultRateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitKeyResolver;
 import com.gauransh.gateway.ratelimiter.resolver.RateLimitPolicyResolver;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -26,7 +25,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * the current fixed window counter with a weighted fraction of the previous fixed window counter.
  * Window transitions and counter increments are executed atomically via bucket-level map synchronization.</p>
  */
-@Component("slidingWindowCounterRateLimiter")
 public class SlidingWindowCounterRateLimiter implements RateLimiter {
 
     private final RateLimiterProperties properties;

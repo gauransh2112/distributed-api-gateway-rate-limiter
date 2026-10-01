@@ -74,6 +74,17 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!--
+                      Pinned explicitly because two @SpringBootApplication classes exist on the
+                      compile path: the live com.gauransh.gateway tree and an abandoned
+                      com.gateway tree left over from the package rename in the first two
+                      commits. Without this the repackage goal cannot choose a main class and no
+                      executable jar can be produced. The abandoned tree should be removed in a
+                      dedicated cleanup; pinning the entry point here does not depend on that.
+                    -->
+                    <mainClass>com.gauransh.gateway.bootstrap.GatewayApplication</mainClass>
+                </configuration>
             </plugin>
         </plugins>
     </build>

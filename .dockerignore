@@ -1,0 +1,3 @@
+# Only the built jar is needed in the image; everything else would bloat the build context.
+*
+!target/distributed-api-gateway-*.jar

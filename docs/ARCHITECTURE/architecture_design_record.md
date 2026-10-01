@@ -8516,7 +8516,7 @@ Status: Accepted
 
 ADR ID: ADR-0016
 
-Version: 1.0
+Version: 1.1
 
 Date: YYYY-MM-DD
 
@@ -8617,6 +8617,49 @@ silently stops protecting. An operator who prefers availability may choose FAIL_
 and that choice is then visible in configuration rather than implicit in a default.
 
 This is a deliberate trade of availability for enforcement in the default case only.
+
+---
+
+# Endpoint Scope
+
+**Version 1.1.** The failure policy applies only to **rate-limited requests**.
+
+```text
+Rate-limited request            Operational health endpoint
+        │                                  │
+        ▼                                  ▼
+Redis unavailable               Health subsystem evaluates dependencies
+        │                                  │
+        ▼                                  ▼
+  Failure Policy                 UP / DEGRADED / DOWN
+        │                        per the health contract
+        ▼
+FAIL_OPEN -> forward
+FAIL_CLOSED -> 503
+```
+
+Operational health, readiness and liveness endpoints are not rate limited (see the API
+Specification, "Operational Endpoints — Rate Limited: No"), so **no failure policy applies to
+them**. They execute their own health logic and report dependency state, including Redis, through
+the `UP` / `DEGRADED` / `DOWN` model of ADR-0015.
+
+**The rate limiter must not intercept a health request before the health subsystem runs.**
+
+This scope was missing from version 1.0 of this ADR, and its absence produced a contradiction with
+ADR-0008. That ADR requires that on Redis unavailability the *"Gateway reports degraded health"*,
+yet under `FAIL_CLOSED` the filter refused every request — health endpoints included — before the
+health controller could execute. The endpoint whose purpose is to report the degraded state was
+unreachable in exactly the circumstance it exists to describe, and `/actuator/health`, which
+ADR-0015 names and which reports the Redis component, answered with
+`RATE_LIMIT_BACKEND_UNAVAILABLE` instead of a health document.
+
+Stated plainly: a request being *refused* because a dependency is down is not the same as a health
+endpoint *reporting* that the dependency is down. The failure policy governs the former. The health
+contract governs the latter.
+
+This amendment narrows the scope of an existing decision. It does not change either policy's
+behaviour for rate-limited requests, and it introduces no new endpoint, configuration or Redis
+behaviour.
 
 ---
 

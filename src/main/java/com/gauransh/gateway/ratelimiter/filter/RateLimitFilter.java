@@ -3,6 +3,7 @@ package com.gauransh.gateway.ratelimiter.filter;
 import com.gauransh.gateway.ratelimiter.RateLimiter;
 import com.gauransh.gateway.ratelimiter.config.RateLimitFailurePolicy;
 import com.gauransh.gateway.ratelimiter.config.RateLimiterProperties;
+import com.gauransh.gateway.ratelimiter.constant.RateLimitConstants;
 import com.gauransh.gateway.ratelimiter.exception.RateLimitBackendUnavailableException;
 import com.gauransh.gateway.ratelimiter.exception.RateLimitExceededException;
 import com.gauransh.gateway.ratelimiter.factory.RateLimitContextFactory;
@@ -63,6 +64,29 @@ public class RateLimitFilter extends OncePerRequestFilter {
         this.headerWriter = headerWriter;
         this.metricsPublisher = metricsPublisher;
         this.handlerExceptionResolver = handlerExceptionResolver;
+    }
+
+    /**
+     * Excludes operational endpoints from rate limiting entirely.
+     *
+     * <p>Uses {@link OncePerRequestFilter}'s own opt-out rather than a path check inside
+     * {@code doFilterInternal}, so an operational request never reaches the limiter and no rate
+     * limit headers are written for it — there is no decision to describe.</p>
+     *
+     * <p>Scope and rationale are documented in the API Specification ("Operational Endpoints —
+     * Rate Limited: No") and ADR-0016's Endpoint Scope: these endpoints are terminated by the
+     * Gateway rather than forwarded, and they must answer when the Gateway is unhealthy, which is
+     * when their answer matters most.</p>
+     */
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        if (contextPath != null && !contextPath.isEmpty() && path.startsWith(contextPath)) {
+            path = path.substring(contextPath.length());
+        }
+        return RateLimitConstants.OPERATIONAL_ENDPOINTS.contains(path)
+                || path.startsWith(RateLimitConstants.OPERATIONAL_HEALTH_PREFIX);
     }
 
     @Override

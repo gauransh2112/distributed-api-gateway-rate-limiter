@@ -10,6 +10,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -62,6 +64,20 @@ public class GlobalExceptionHandler {
 
         ApiResponse.ApiError apiError = ApiResponse.ApiError.of(ex.getErrorCode(), ex.getMessage());
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ApiResponse.error(apiError, requestId));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResourceFoundException(NoResourceFoundException ex) {
+        String requestId = UUID.randomUUID().toString();
+        log.info("Route or resource not found [requestId={}, method={}, path={}]: {}",
+                requestId, ex.getHttpMethod(), ex.getResourcePath(), ex.getMessage());
+
+        ApiResponse.ApiError apiError = ApiResponse.ApiError.of(
+                "ROUTE-001",
+                "No configured route matches the incoming request."
+        );
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error(apiError, requestId));
     }
 

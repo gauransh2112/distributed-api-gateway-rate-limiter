@@ -107,13 +107,26 @@ class RateLimitEndToEndIntegrationTest {
             assertThat(call().getResponse().getStatus())
                     .as("request %d of %d must be admitted by the limiter (404 = no handler, "
                             + "but the limiter let it through)", i, CAPACITY)
-                    .isNotEqualTo(HttpStatus.TOO_MANY_REQUESTS.value());
+                    .isEqualTo(HttpStatus.NOT_FOUND.value());
         }
 
         assertThat(call().getResponse().getStatus())
                 .as("the request past capacity must be rejected — this is what the deployed "
                         + "Gateway failed to do while NoOpRateLimiter was wired in")
                 .isEqualTo(HttpStatus.TOO_MANY_REQUESTS.value());
+    }
+
+    @Test
+    @DisplayName("An unmapped request through the rate-limited path returns HTTP 404 with ROUTE-001 error envelope")
+    void testUnmappedRouteReturns404WithCanonicalEnvelope() throws Exception {
+        MvcResult result = call();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(HttpStatus.NOT_FOUND.value());
+        assertThat(result.getResponse().getHeader(RateLimitConstants.HEADER_LIMIT)).isNotNull();
+        assertThat(result.getResponse().getHeader(RateLimitConstants.HEADER_REMAINING)).isNotNull();
+        assertThat(result.getResponse().getContentAsString())
+                .contains("\"code\":\"ROUTE-001\"")
+                .contains("\"success\":false");
     }
 
     @Test

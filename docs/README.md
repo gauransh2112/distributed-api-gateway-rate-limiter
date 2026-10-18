@@ -1028,7 +1028,7 @@ Each phase introduces a new backend concept, implements it in a production-inspi
 | Rate Limiting | Implement multiple rate-limiting algorithms | 🚧 In Progress |
 | Redis Integration | Distributed counters and shared state | ⏳ Planned |
 | Concurrency | Thread safety and synchronization | ⏳ Planned |
-| Distributed Gateway | Multiple gateway instances | ⏳ Planned |
+| Distributed Gateway | Multiple gateway instances | 🚧 Completed (Sprint 16–17 Cluster & Benchmark Scope) |
 | Dashboard & Analytics | Monitoring and real-time statistics | ⏳ Planned |
 | Deployment | Docker and cloud deployment | ⏳ Planned |
 
@@ -1138,19 +1138,23 @@ Scale the gateway horizontally.
 
 ### Deliverables
 
-- Multiple gateway instances
-- Shared Redis backend
-- Global rate limiting
-- Horizontal scaling
+- Multiple gateway instances (3-node base cluster & 5-node overlay)
+- Shared Redis backend rate limiting
+- Global rate limiting & atomic shared-quota enforcement
+- Clustered horizontal scaling benchmark harness & empirical campaign
 
 ### Concepts
 
 - Distributed systems
 - Stateless services
-- High availability
-- Fault tolerance
+- High availability & container isolation
+- Fault tolerance & `FAIL_CLOSED` outage semantics
 
-**Status:** ⏳ Planned
+**Status:** ✅ Completed (Sprint 16–17 Cluster Deployment & Benchmark Scope)
+
+> **Note on Project Roadmap & Sprint Scope**:
+> Sprint 16 and 17 implement the clustered multi-node runtime and empirical horizontal scaling benchmarks.
+> Multi-host throughput scalability (requiring physical multi-host infrastructure), cluster health aggregation / monitoring dashboard (scheduled for Sprint 18), and reverse-proxy routing to backend origins (scheduled for Sprint 19/20) remain outside this completed scope.
 
 ---
 
@@ -1381,7 +1385,7 @@ The following benchmarks will be conducted throughout the project lifecycle.
 | Token Bucket Benchmark | Burst traffic handling | ⏳ Planned |
 | Leaky Bucket Benchmark | Traffic smoothing | ⏳ Planned |
 | Redis Latency | Measure distributed storage overhead | ⏳ Planned |
-| Single vs Multi-Gateway | Horizontal scaling comparison | ⏳ Planned |
+| Single vs Multi-Gateway | Horizontal scaling comparison | ✅ Completed (Sprint 17) |
 | Concurrency Benchmark | Thread safety under load | ⏳ Planned |
 
 ---
@@ -1415,7 +1419,23 @@ The project compares all five implemented in-memory rate-limiting algorithms und
 | **Token Bucket** | High (~6.2M RPS) | $\mathcal{O}(N)$ | Continuous token refill kinetics | Permits burst up to capacity $C$ | Ideal for bursty client workloads; controlled continuous refill |
 | **Leaky Bucket** | High (~5.4M RPS) | $\mathcal{O}(N)$ | Continuous water drain outflow | Rejects burst exceeding bucket space | Ideal for traffic smoothing; enforces constant outflow processing |
 
-*Full benchmark results, environment specifications, raw per-run data tables, and methodology limitations are documented in [benchmarks/reports/algorithm_benchmark_report.md](file:///c:/Users/ASUS/OneDrive/Desktop/PROJECTS/Distributed_api_gateway/benchmarks/reports/algorithm_benchmark_report.md).*
+*Full benchmark results, environment specifications, raw per-run data tables, and methodology limitations are documented in [../benchmarks/reports/algorithm_benchmark_report.md](../benchmarks/reports/algorithm_benchmark_report.md).*
+
+### Horizontal Scaling & Multi-Gateway Benchmark (Sprint 17)
+
+Sprint 17 evaluated 1-node, 3-node, and 5-node gateway cluster topologies backed by shared Redis under controlled concurrent load using `ClusterScalingBenchmarkRunner`.
+
+| Topology | Throughput (Mean) | Latency P50 | Latency P95 | Latency P99 | Response Classification | Shared-Quota Result |
+|---|---|---|---|---|---|---|
+| **1-Node Baseline** | 704.3 RPS | 30.8 – 47.5 ms | 51.2 – 87.9 ms | 60.2 – 107.4 ms | 100% `ADMITTED_ROUTING_PENDING` | Exact 5 allowed, 15 rejected |
+| **3-Node Cluster** | 475.1 RPS | 46.6 – 64.3 ms | 84.4 – 130.1 ms | 124.5 – 157.2 ms | 100% `ADMITTED_ROUTING_PENDING` | Exact 5 allowed, 15 rejected |
+| **5-Node Cluster** | 358.9 RPS | 67.5 – 73.6 ms | 138.1 – 203.3 ms | 211.7 – 311.6 ms | 100% `ADMITTED_ROUTING_PENDING` | Exact 5 allowed, 15 rejected |
+
+> [!WARNING]
+> **Single-Host Boundary**: All gateway instances, Redis, backend mock, and benchmark runner executed on a single physical host. Observed throughput declined as node counts increased. This experiment validates functional multi-gateway coordination and shared state consistency on a single host; it does **not** demonstrate multi-host horizontal throughput scalability.
+> Admitted requests returned HTTP 404 with rate-limit headers (`ADMITTED_ROUTING_PENDING`) because reverse-proxy routing is deferred to Sprint 19/20. Mean latency is omitted from runner summary output and marked unavailable in campaign logs.
+
+*Detailed measurements, failure injection results, and methodology limitations are documented in [../benchmarks/reports/horizontal_scaling_benchmark_report.md](../benchmarks/reports/horizontal_scaling_benchmark_report.md).*
 
 ---
 

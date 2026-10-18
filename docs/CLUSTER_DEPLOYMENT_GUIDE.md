@@ -1,8 +1,8 @@
 # Distributed Gateway Cluster — Deployment Guide
 
-**Sprint:** 16 — Distributed Gateway Cluster
-**Version:** 1.0
-**Scope:** Clustered deployment of the Gateway. Operational documentation only.
+**Sprint:** 16 & 17 — Distributed Gateway Cluster & Horizontal Scaling
+**Version:** 1.1
+**Scope:** Clustered deployment and horizontal scaling validation of the Gateway. Operational documentation only.
 
 ---
 
@@ -53,19 +53,27 @@ Cluster health     — "what is the state of all nodes?"  -> Phase 7 / Sprint 18
 
 ## 3. Topology
 
+The cluster supports both a baseline 3-node topology and an extended 5-node scaling overlay:
+
 ```
-                      ┌─────────────┐
+                      ┌─────────────┐ :18081
                       │  gateway-1  │──┐
-                      ├─────────────┤  │
-    DNS: "gateway" ───│  gateway-2  │──┼──▶  redis  (shared state)
-                      ├─────────────┤  │
-                      │  gateway-3  │──┘
+                      ├─────────────┤ :18082
+                      │  gateway-2  │──┤
+                      ├─────────────┤ :18083
+    DNS: "gateway" ───│  gateway-3  │──┼──▶  redis  (shared state)
+                      ├─────────────┤ :18084
+                      │  gateway-4* │──┤
+                      ├─────────────┤ :18085
+                      │  gateway-5* │──┘
                       └─────────────┘
                                          backend  (placeholder origin)
 ```
+*\*Instances gateway-4 and gateway-5 are activated via the `docker-compose.5nodes.yml` overlay.*
 
 All services sit on one user-defined bridge network, `gateway-net`, and address each other by
-service name. No host networking, no hardcoded addresses.
+service name. No host networking, no hardcoded addresses. Gateway instances map their container
+port 8080 to host ports 18081 through 18085.
 
 ---
 
@@ -74,11 +82,14 @@ service name. No host networking, no hardcoded addresses.
 | Artifact | Role |
 |---|---|
 | `Dockerfile` | Runtime image for the Gateway |
-| `docker/docker-compose.cluster.yml` | Three-node cluster, shared Redis, backend, network |
+| `docker/docker-compose.cluster.yml` | Three-node baseline cluster, shared Redis, backend, network |
+| `docker/docker-compose.5nodes.yml` | Extended topology overlay adding `gateway-4` and `gateway-5` |
+| `docker/docker-compose.scaling-capacity.yml` | Supplementary overlay raising rate-limit capacity to 10,000 for high-load benchmarking |
 | `docker/docker-compose.yml` | **Unchanged** — Redis alone, for local development |
 
-The two compose files are separate on purpose. `docker-compose.yml` is the Redis-only development
-environment documented in the Redis Setup Guide; that workflow is untouched.
+The compose files are layered purposefully. `docker-compose.yml` remains the Redis-only development
+environment documented in the Redis Setup Guide; that workflow is untouched. Benchmark scaling utilizes
+the cluster file composed with the 5-node and capacity overlays.
 
 ### The image
 
@@ -296,15 +307,43 @@ sprint.
 
 The Playbook's compose topology lists a `backend` service, so one is present. It is a minimal static
 HTTP origin and is **deliberately inert**: the Gateway does not route to it, because the `routing`
-package — part of the approved package structure — is not yet implemented, so the Gateway currently
-terminates requests itself.
+package is not yet implemented. The Gateway currently terminates requests itself (returning HTTP 404
+with error code `ROUTE-001` and rate-limiting headers, classified as `ADMITTED_ROUTING_PENDING`).
 
 It exists so the documented topology is complete and so routing has a target once that package
-lands. Wiring it up now would have meant inventing undocumented proxy behaviour.
+lands. Reverse-proxy routing and request forwarding to backend origins are scheduled for **Sprint 19/20**.
 
 ---
 
-## 11. Architecture compliance
+## 11. Horizontal Scaling & Load Testing (Sprint 17 Empirical Findings)
+
+Sprint 17 executed controlled empirical load testing across 1-node, 3-node, and 5-node topologies
+using the dedicated virtual-thread test harness (`ClusterScalingBenchmarkRunner`). Complete measurements,
+methodology, and per-run tables are documented in
+[../benchmarks/reports/horizontal_scaling_benchmark_report.md](../benchmarks/reports/horizontal_scaling_benchmark_report.md).
+
+### Summary of Empirical Observations
+
+1. **Throughput & Latency Synthesis**:
+   - **1-Node Baseline**: 553.4 – 877.1 RPS (average 704.3 RPS), P50 latency 30.8 – 47.5 ms.
+   - **3-Node Cluster**: 420.3 – 578.2 RPS (average 475.1 RPS), P50 latency 46.6 – 64.3 ms.
+   - **5-Node Cluster**: 335.5 – 400.6 RPS (average 358.9 RPS), P50 latency 67.5 – 73.6 ms.
+   - *Mean Latency*: Calculated internally by the metrics collector but omitted from runner summary output; recorded as unavailable in campaign logs without derivation.
+2. **Proportional Load Distribution**:
+   Client round-robin requests rotated with exact mathematical distribution across nodes (100% on 1 node, 33.33% per node on 3 nodes, 20.0% per node on 5 nodes). Zero request drops occurred.
+3. **Shared-Quota Correctness**:
+   Under canonical capacity (`capacity: 5`, `--warmup=0`, 20 requests), round-robin traffic across both 3-node and 5-node clusters produced exactly 5 admissions (`ADMITTED_ROUTING_PENDING`) followed by exactly 15 consecutive HTTP 429 rejections with zero over-admission.
+4. **Gateway Node Isolation**:
+   Terminating `gateway-3` (`docker stop gateway-3`) resulted in immediate TCP transport failure on direct port 18083. Surviving nodes continued operating seamlessly with uncorrupted shared Redis quota counters. Container restart took 323.9 ms and reached healthy in an observed measurement of 1.07 seconds (an experiment measurement, not a production SLA). No transparent client-side failover exists.
+5. **Redis Outage & Recovery**:
+   Terminating `gateway-cluster-redis` caused all gateway nodes to return clean `HTTP 503 Service Unavailable` (`RATE_LIMIT_BACKEND_UNAVAILABLE`) under the `FAIL_CLOSED` policy (ADR-0016), with zero header leakage. Upon Redis restart, nodes reconnected automatically within an observed measurement of 1.08 seconds.
+
+> [!IMPORTANT]
+> **Single-Host Boundary**: All gateway instances, Redis, backend, and benchmark runner executed on a single physical host. Throughput declined as node counts increased. This experiment validates functional multi-gateway coordination and shared state consistency on a single host; it does **not** demonstrate multi-host horizontal throughput scalability.
+
+---
+
+## 12. Architecture compliance
 
 | Constraint | Status |
 |---|---|
@@ -317,24 +356,22 @@ lands. Wiring it up now would have meant inventing undocumented proxy behaviour.
 | No external load balancer | ✅ Docker DNS only |
 | Health logic ownership | ✅ remains under `observability` |
 
-**No Java source file was added or modified by this sprint.** Sprint 16 is deployment
-infrastructure, configuration and documentation — which is the correct outcome once the three
-cluster-health components are deferred, because the application was already stateless and
-already proven correct across instances.
+**No Java source file was added or modified by this sprint.** Sprint 16 and Sprint 17 deliverables
+consist of deployment infrastructure, benchmark runners, configuration overlays, and empirical documentation.
 
 ---
 
-## 12. Known limitations
+## 13. Known limitations
 
 - **Cluster health aggregation is not implemented** — deferred to Phase 7 / Sprint 18 with its
   documented `GET /health/cluster` endpoint. There is currently no single place to ask "what is the
   state of every node?"; each instance answers only for itself.
-- **No application-level failover logic.** Failover relies on the orchestrator and DNS. Sufficient
-  for stateless instances, and the documented architecture asks for nothing more.
-- **The `backend` service is not routed to**, as described in section 10.
-- **Load and scaling behaviour is not measured here.** Throughput, latency, failover timing and
-  3-vs-5-node comparisons belong to Sprint 17 — Horizontal Scaling & Load Testing.
+- **No application-level failover logic.** Failover relies on the orchestrator and DNS. Direct requests
+  to a stopped node fail with transport errors; there is no transparent client retry or gateway-level proxy failover.
+- **The `backend` service is not routed to**, as described in section 10. Admitted requests return HTTP 404
+  (`ADMITTED_ROUTING_PENDING`) pending reverse-proxy routing in Sprint 19/20.
+- **Single-host co-location boundary.** Clustered benchmarks were conducted on a single physical machine.
+  Multi-host horizontal throughput scalability has not been tested or demonstrated.
 - **Scaling beyond three instances requires adding services** to the compose file. The application
-  needs no change, which is the property being demonstrated, but this compose file enumerates
-  instances explicitly rather than using replicas, because the Playbook's documented topology names
-  `gateway-1`, `gateway-2` and `gateway-3`.
+  needs no change, which is the property being demonstrated, but compose files enumerate instances
+  explicitly (`docker-compose.5nodes.yml`) rather than using dynamic scaling replicas.

@@ -1,0 +1,42 @@
+# Distributed API Gateway — Scaling Benchmark Capacity Overlay
+#
+# Additive overlay that raises the default rate-limit capacity to 10,000 for the
+# Horizontal Scaling benchmark experiment (Experiment A).
+#
+# This ensures that benchmark workloads measure full gateway throughput and latency
+# of admitted requests rather than being prematurely truncated by the canonical
+# low-quota demonstration threshold (capacity = 5).
+#
+# Preserves canonical docker/docker-compose.cluster.yml and docker/docker-compose.5nodes.yml.
+#
+# Usage (3-node scaling):
+#   docker compose -f docker/docker-compose.cluster.yml -f docker/docker-compose.scaling-capacity.yml config
+#
+# Usage (5-node scaling):
+#   docker compose -f docker/docker-compose.cluster.yml -f docker/docker-compose.5nodes.yml -f docker/docker-compose.scaling-capacity.yml config
+
+name: gateway-cluster
+
+services:
+
+  gateway-1:
+    environment:
+      GATEWAY_RATELIMIT_DEFAULTCAPACITY: "10000"
+
+  gateway-2:
+    environment:
+      GATEWAY_RATELIMIT_DEFAULTCAPACITY: "10000"
+
+  gateway-3:
+    environment:
+      GATEWAY_RATELIMIT_DEFAULTCAPACITY: "10000"
+
+  gateway-4:
+    image: distributed-api-gateway:1.0.0-SNAPSHOT
+    environment:
+      GATEWAY_RATELIMIT_DEFAULTCAPACITY: "10000"
+
+  gateway-5:
+    image: distributed-api-gateway:1.0.0-SNAPSHOT
+    environment:
+      GATEWAY_RATELIMIT_DEFAULTCAPACITY: "10000"

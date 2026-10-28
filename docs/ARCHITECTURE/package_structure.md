@@ -5673,6 +5673,7 @@ The Distributed API Gateway consists of the following packages.
 | PKG-014 | Shared | Common reusable abstractions |
 | PKG-015 | Security | Reusable security infrastructure |
 | PKG-016 | Package Index | Master package reference |
+| PKG-017 | Dashboard | Operational dashboard aggregation & presentation APIs |
 
 ---
 
@@ -5681,6 +5682,11 @@ The Distributed API Gateway consists of the following packages.
 The package hierarchy is organized into the following layers.
 
 ```
+Dashboard (Presentation)
+
+        │
+        ▼
+
 Bootstrap
 
         │
@@ -5705,7 +5711,7 @@ Infrastructure Packages
 
         ▼
 
-Cross-Cutting Packages
+Cross-Cutting Packages (Observability, Security)
 
         │
 
@@ -5722,6 +5728,7 @@ Each layer has clearly defined responsibilities and dependency rules.
 
 | Layer | Packages |
 |---------|----------|
+| Presentation | Dashboard |
 | Bootstrap | Bootstrap |
 | Gateway | Gateway |
 | Business | Authentication, Authorization, Routing, Rate Limiter |
@@ -5748,8 +5755,10 @@ Each package belongs to exactly one architectural layer.
 | Runtime Configuration | Configuration |
 | Upstream Communication | Network |
 | Logging | Observability |
-| Metrics | Observability |
+| Metrics & Telemetry Engine | Observability |
 | Distributed Tracing | Observability |
+| Monitoring APIs (/api/v1/monitoring/*) | Observability |
+| Dashboard Aggregation (/api/v1/dashboard/*) | Dashboard |
 | Security Infrastructure | Security |
 | Shared Abstractions | Shared |
 
@@ -5762,32 +5771,28 @@ Ownership shall never overlap.
 Allowed dependency flow:
 
 ```
+Dashboard
+↓
+Observability / Gateway / Shared
+
 Bootstrap
-
 ↓
-
 Gateway
-
 ↓
-
 Business
-
 ↓
-
 Infrastructure
-
 ↓
-
-Cross-Cutting
-
+Cross-Cutting (Observability, Security)
 ↓
-
 Shared
 ```
 
 Dependencies must always flow downward.
+Specifically: `com.gauransh.gateway.dashboard` may depend on `com.gauransh.gateway.observability` and `shared`.
+`com.gauransh.gateway.observability` must NEVER depend on `dashboard`.
 
-Reverse dependencies are prohibited.
+Reverse dependencies are strictly prohibited.
 
 ---
 

@@ -3108,15 +3108,28 @@ Administrator
 
 ---
 
+### Scope Note
+
+> [!NOTE]
+> `/api/v1/monitoring/health` evaluates local gateway instance and Redis connection health. Peer-to-peer cluster health aggregation is deferred pending formal peer discovery architecture.
+
+---
+
 ### Successful Response
 
 ```json
 {
-  "status": "UP",
-  "gateway": "UP",
-  "redis": "UP",
-  "disk": "UP",
-  "memory": "UP"
+  "success": true,
+  "data": {
+    "status": "UP",
+    "gateway": "UP",
+    "redis": "UP",
+    "disk": "UP",
+    "memory": "UP"
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3124,9 +3137,26 @@ Administrator
 
 ### Error Response
 
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "MON-004",
+    "message": "Health check degraded or failed",
+    "details": {
+      "status": "DOWN",
+      "gateway": "UP",
+      "redis": "DOWN",
+      "disk": "UP",
+      "memory": "UP"
+    }
+  },
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
 ```
-503 Service Unavailable
-```
+HTTP Status: `503 Service Unavailable` (or `200 OK` when status is `DEGRADED`)
 
 ---
 
@@ -3174,11 +3204,17 @@ Administrator
 
 ```json
 {
-  "requestsTotal": 125043,
-  "requestsPerSecond": 352,
-  "successRate": 99.84,
-  "errorRate": 0.16,
-  "averageLatencyMs": 14.8
+  "success": true,
+  "data": {
+    "requestsTotal": 125043,
+    "requestsPerSecond": 352,
+    "successRate": 99.84,
+    "errorRate": 0.16,
+    "averageLatencyMs": 14.8
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3220,11 +3256,17 @@ GET /api/v1/monitoring/jvm
 
 ```json
 {
-  "heapUsedMb": 421,
-  "heapMaxMb": 1024,
-  "cpuUsage": 18.4,
-  "threads": 62,
-  "uptimeSeconds": 48231
+  "success": true,
+  "data": {
+    "heapUsedMb": 421,
+    "heapMaxMb": 1024,
+    "cpuUsage": 18.4,
+    "threads": 62,
+    "uptimeSeconds": 48231
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3276,11 +3318,17 @@ GET /api/v1/monitoring/redis
 
 ```json
 {
-  "status": "UP",
-  "averageLatencyMs": 0.72,
-  "connections": 12,
-  "commandsExecuted": 842731,
-  "luaExecutions": 11842
+  "success": true,
+  "data": {
+    "status": "UP",
+    "averageLatencyMs": 0.72,
+    "connections": 12,
+    "commandsExecuted": 842731,
+    "luaExecutions": 11842
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3340,10 +3388,16 @@ GET /api/v1/monitoring/traffic
 
 ```json
 {
-  "requests": 12431,
-  "successful": 12398,
-  "failed": 33,
-  "averageLatencyMs": 18.7
+  "success": true,
+  "data": {
+    "requests": 12431,
+    "successful": 12398,
+    "failed": 33,
+    "averageLatencyMs": 18.7
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3385,10 +3439,16 @@ GET /api/v1/monitoring/ratelimiter
 
 ```json
 {
-  "allowedRequests": 842193,
-  "blockedRequests": 841,
-  "algorithm": "TOKEN_BUCKET",
-  "averageDecisionLatencyMs": 0.48
+  "success": true,
+  "data": {
+    "allowedRequests": 842193,
+    "blockedRequests": 841,
+    "algorithm": "TOKEN_BUCKET",
+    "averageDecisionLatencyMs": 0.48
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3457,12 +3517,15 @@ algorithm
 
 ```json
 {
-  "timestamp": "...",
-  "status": 401,
-  "error": "Unauthorized",
-  "code": "MON-001",
-  "message": "Administrator privileges required.",
-  "path": "/api/v1/monitoring/metrics"
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "MON-001",
+    "message": "Administrator privileges required.",
+    "details": null
+  },
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3623,13 +3686,20 @@ No other module should depend on them.
 
 # API Overview
 
+### Active Sprint 18 Endpoints
+
 | Endpoint | Method | Authentication | Description |
 |------------|---------|----------------|-------------|
 | /api/v1/dashboard/overview | GET | JWT | Dashboard Summary |
 | /api/v1/dashboard/live | GET | JWT | Live Gateway Status |
-| /api/v1/dashboard/routes | GET | JWT | Route Analytics |
 | /api/v1/dashboard/ratelimiter | GET | JWT | Rate Limiter Dashboard |
 | /api/v1/dashboard/system | GET | JWT | System Information |
+
+### Future Capabilities (Scheduled for Sprint 19/20)
+
+| Endpoint | Method | Authentication | Description |
+|------------|---------|----------------|-------------|
+| /api/v1/dashboard/routes | GET | JWT | Route Analytics (deferred to Sprint 19/20 dynamic routing) |
 
 ---
 
@@ -3663,12 +3733,18 @@ Administrator
 
 ```json
 {
-  "gatewayStatus": "UP",
-  "redisStatus": "UP",
-  "requestsPerSecond": 318,
-  "successRate": 99.91,
-  "blockedRequests": 94,
-  "averageLatency": 17.3
+  "success": true,
+  "data": {
+    "gatewayStatus": "UP",
+    "redisStatus": "UP",
+    "requestsPerSecond": 318,
+    "successRate": 99.91,
+    "blockedRequests": 94,
+    "averageLatency": 17.3
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3718,11 +3794,17 @@ GET /api/v1/dashboard/live
 
 ```json
 {
-  "gateway": "UP",
-  "redis": "UP",
-  "authentication": "UP",
-  "routing": "UP",
-  "rateLimiter": "UP"
+  "success": true,
+  "data": {
+    "gateway": "UP",
+    "redis": "UP",
+    "authentication": "UP",
+    "routing": "UP",
+    "rateLimiter": "UP"
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3758,11 +3840,14 @@ Yes
 
 # Endpoint 3
 
-## Route Analytics
+## Route Analytics (Future — Scheduled for Sprint 19/20)
 
 ### Purpose
 
 Return statistics for every configured route.
+
+> [!NOTE]
+> Route analytics is scheduled for Sprint 19/20 alongside the reverse-proxy routing table and request forwarding engine. This capability is not active in Sprint 18 to avoid maintaining empty placeholder endpoints.
 
 ---
 
@@ -3777,20 +3862,26 @@ GET /api/v1/dashboard/routes
 ### Successful Response
 
 ```json
-[
-  {
-    "route": "/users/**",
-    "requests": 43123,
-    "averageLatency": 14.2,
-    "errors": 3
-  },
-  {
-    "route": "/orders/**",
-    "requests": 21432,
-    "averageLatency": 18.9,
-    "errors": 9
-  }
-]
+{
+  "success": true,
+  "data": [
+    {
+      "route": "/users/**",
+      "requests": 43123,
+      "averageLatency": 14.2,
+      "errors": 3
+    },
+    {
+      "route": "/orders/**",
+      "requests": 21432,
+      "averageLatency": 18.9,
+      "errors": 9
+    }
+  ],
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
 ```
 
 ---
@@ -3831,11 +3922,17 @@ GET /api/v1/dashboard/ratelimiter
 
 ```json
 {
-  "algorithm": "TOKEN_BUCKET",
-  "allowedRequests": 84231,
-  "blockedRequests": 312,
-  "averageDecisionLatency": 0.63,
-  "redisLatency": 0.72
+  "success": true,
+  "data": {
+    "algorithm": "TOKEN_BUCKET",
+    "allowedRequests": 84231,
+    "blockedRequests": 312,
+    "averageDecisionLatency": 0.63,
+    "redisLatency": 0.72
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3898,11 +3995,17 @@ GET /api/v1/dashboard/system
 
 ```json
 {
-  "application": "Distributed API Gateway",
-  "version": "1.0.0",
-  "javaVersion": "21",
-  "springBootVersion": "3.x",
-  "uptime": "3d 12h"
+  "success": true,
+  "data": {
+    "application": "Distributed API Gateway",
+    "version": "1.0.0-SNAPSHOT",
+    "javaVersion": "21",
+    "springBootVersion": "3.3.4",
+    "uptime": "3d 12h"
+  },
+  "error": null,
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -3952,12 +4055,15 @@ application/json
 
 ```json
 {
-  "timestamp": "...",
-  "status": 401,
-  "error": "Unauthorized",
-  "code": "DB-001",
-  "message": "Administrator authentication required.",
-  "path": "/api/v1/dashboard/overview"
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "DB-001",
+    "message": "Administrator authentication required.",
+    "details": null
+  },
+  "timestamp": "2026-10-18T20:00:00Z",
+  "requestId": "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 

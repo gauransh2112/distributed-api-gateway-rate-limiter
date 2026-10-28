@@ -4877,62 +4877,31 @@ Redis
 Backend
 ```
 
----
+# Architectural Package Layout
 
-# New Packages
-
-```
-dashboard/
-
-analytics/
-
-metrics/
-
-health/
-
-monitoring/
-```
-
----
-
-# Folder Structure
+> [!NOTE]
+> Per Sprint 18 architectural reconciliation and `package_structure.md`, informal preliminary package proposals (`analytics/`, `metrics/`, `health/`, `monitoring/`) are consolidated under two canonical packages to prevent module fragmentation and cyclic dependencies:
+> 1. `com.gauransh.gateway.observability.*` (owns telemetry engine, counters, sliding-window latency samplers, health indicators, and `/api/v1/monitoring/*` endpoints)
+> 2. `com.gauransh.gateway.dashboard.*` (owns dashboard aggregation service and `/api/v1/dashboard/*` endpoints; depends on `observability`)
 
 ```
-dashboard/
+com.gauransh.gateway.observability/
+├── controller/
+│   └── MonitoringController
+├── health/
+│   └── SystemHealthIndicator, HealthCheckController
+├── metrics/
+│   └── MetricsService, RateLimitMetricsPublisher, GatewayRateLimitMetricsPublisher
+└── model/
+    └── HealthResponse, GatewayMetricsResponse, JvmMetricsResponse, RedisMetricsResponse, TrafficStatsResponse, RateLimiterMetricsResponse
 
-DashboardController
-
-DashboardService
-
-analytics/
-
-AnalyticsService
-
-RouteAnalytics
-
-RateLimitAnalytics
-
-metrics/
-
-MetricsController
-
-MetricsService
-
-JvmMetrics
-
-GatewayMetrics
-
-health/
-
-ClusterHealthService
-
-RedisHealthService
-
-GatewayHealthService
-
-monitoring/
-
-MonitoringConfiguration
+com.gauransh.gateway.dashboard/
+├── controller/
+│   └── DashboardController
+├── service/
+│   └── DashboardService
+└── model/
+    └── DashboardOverviewResponse, LiveStatusResponse, RateLimiterDashboardResponse, SystemInfoResponse
 ```
 
 ---
@@ -5070,69 +5039,25 @@ Displays
 
 ---
 
-# Metrics APIs
+# Metrics & Visibility APIs
 
-## Gateway Metrics
-
-```
-GET /metrics
-```
-
----
-
-## Dashboard
-
-```
-GET /dashboard
-```
-
----
-
-## Cluster Health
-
-```
-GET /health/cluster
-```
-
----
-
-## Gateway Health
-
-```
-GET /health/gateway
-```
-
----
-
-## Redis Health
-
-```
-GET /health/redis
-```
-
----
-
-## Route Analytics
-
-```
-GET /analytics/routes
-```
-
----
-
-## Rate Limiting Analytics
-
-```
-GET /analytics/rate-limits
-```
-
----
-
-## JVM Metrics
-
-```
-GET /metrics/jvm
-```
+> [!NOTE]
+> The informal, unversioned endpoint sketches below (`/metrics`, `/dashboard`, `/health/cluster`, etc.) are superseded by the canonical, versioned REST contracts in `API_specification.md`:
+> - **Monitoring APIs (`com.gauransh.gateway.observability`):**
+>   - `GET /api/v1/monitoring/health` (local gateway instance and Redis connection health; cluster peer health aggregation is deferred)
+>   - `GET /api/v1/monitoring/metrics` (request totals, success/error rates, rolling average latency)
+>   - `GET /api/v1/monitoring/jvm` (heap usage, CPU usage, thread count, uptime)
+>   - `GET /api/v1/monitoring/redis` (connection status, command counts, latency)
+>   - `GET /api/v1/monitoring/traffic` (sliding-window request counts, successes, failures)
+>   - `GET /api/v1/monitoring/ratelimiter` (allowed/blocked counters, algorithm breakdown)
+> - **Dashboard Aggregation APIs (`com.gauransh.gateway.dashboard`):**
+>   - `GET /api/v1/dashboard/overview` (high-level operational summary)
+>   - `GET /api/v1/dashboard/live` (component-level health statuses)
+>   - `GET /api/v1/dashboard/ratelimiter` (rate limiter algorithm breakdown and block ratio)
+>   - `GET /api/v1/dashboard/system` (application version, runtime JVM, and uptime)
+>   - *(Note: `GET /api/v1/dashboard/routes` is scheduled for Sprint 19/20 alongside dynamic reverse-proxy routing)*
+>
+> All endpoints return the standardized `ApiResponse<T>` envelope. Low-level container probes (`/health`, `/ready`) and Spring Boot Actuator endpoints remain active and preserved.
 
 ---
 

@@ -2,16 +2,16 @@ package com.gauransh.gateway.ratelimiter.metrics;
 
 import com.gauransh.gateway.ratelimiter.model.RateLimitContext;
 import com.gauransh.gateway.ratelimiter.model.RateLimitDecision;
-import org.springframework.context.annotation.Primary;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
 /**
- * Default pass-through implementation of {@link RateLimitMetricsPublisher}.
+ * Default pass-through fallback implementation of {@link RateLimitMetricsPublisher}.
  */
 @Component
-@Primary
+@ConditionalOnMissingBean(RateLimitMetricsPublisher.class)
 public class NoOpRateLimitMetricsPublisher implements RateLimitMetricsPublisher {
 
     @Override

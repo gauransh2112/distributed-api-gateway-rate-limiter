@@ -3825,39 +3825,51 @@ The Dashboard communicates only through public Gateway APIs.
 
 # Owned Packages
 
+### Backend Aggregation Package
+
 ```
-dashboard/
+com.gauransh.gateway.dashboard/
+├── controller/
+│   └── DashboardController
+├── service/
+│   └── DashboardService
+└── model/
+    └── DashboardOverviewResponse, LiveStatusResponse, RateLimiterDashboardResponse, SystemInfoResponse
+```
 
-pages/
+### Frontend UI Assets
 
-components/
-
-layouts/
-
-charts/
-
-services/
-
-hooks/
-
-models/
-
-utils/
+```
+dashboard/ (or ui/)
+├── pages/
+├── components/
+├── layouts/
+├── charts/
+├── services/
+├── hooks/
+└── utils/
 ```
 
 ---
 
 # Public API
 
-The Dashboard exposes
+### Backend Public API
+Exposes the versioned aggregation REST endpoints under `/api/v1/dashboard/*`:
+- `GET /api/v1/dashboard/overview`
+- `GET /api/v1/dashboard/live`
+- `GET /api/v1/dashboard/ratelimiter`
+- `GET /api/v1/dashboard/system`
+*(Note: `GET /api/v1/dashboard/routes` is scheduled for Sprint 19/20 alongside dynamic reverse-proxy routing)*
+
+### Frontend Public API
+The Frontend exposes:
 
 ```
 DashboardApplication
 ```
 
-No backend module should depend on Dashboard components.
-
-Communication is strictly one-way.
+No lower-level gateway module or observability component may ever depend on Dashboard. Communication is strictly one-way: `Dashboard -> Observability`.
 
 ---
 
@@ -3923,41 +3935,39 @@ User Activity
 
 # Dependencies
 
-The Dashboard may depend on
+### Backend Dashboard Package
+The backend Dashboard package may depend on:
+- ✓ Observability (`MetricsService`, health status interfaces)
+- ✓ Spring Web / Spring Boot
+- ✓ Shared foundation (`ApiResponse`, error models)
 
-✓ React
-
-✓ React Router
-
-✓ Chart Library
-
-✓ Axios (or Fetch)
-
-✓ CSS Framework
+### Frontend UI Application
+The Frontend UI may depend on:
+- ✓ React
+- ✓ Chart Library (e.g. Chart.js)
+- ✓ Fetch / Axios
 
 ---
 
 # Forbidden Dependencies
 
-The Dashboard must never depend on
+The Dashboard module must never depend on:
 
-✗ Redis
+✗ Authentication internals (relies only on Spring Security filter chain for role checks)
 
-✗ Spring Boot
+✗ Rate Limiter strategy internals
 
-✗ Authentication Module
+✗ Routing internals / proxy forwarding state
 
-✗ Rate Limiter
+✗ Direct Redis key manipulation (queries Observability metrics/health instead)
 
-✗ Routing
-
-✗ Business Services
+The Observability module must NEVER depend on the Dashboard module.
 
 ---
 
 # Data Ownership
 
-The Dashboard owns
+The Dashboard owns:
 
 ```
 Charts
